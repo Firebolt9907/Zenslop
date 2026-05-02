@@ -29,7 +29,12 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
         position: fixed;
         background: transparent;
         display: none; /* Hidden until video plays */
-        border-radius: var(--zen-border-radius);
+        border-radius: 18px;
+        border: 3px solid #ff9ecf;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.85) inset,
+          0 6px 28px rgba(255, 143, 200, 0.42),
+          0 0 48px rgba(255, 182, 218, 0.38);
         overflow: hidden;
         contain: size layout;
         z-index: 10;
@@ -51,6 +56,8 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
         min-height: 0;
         object-fit: contain;
         display: block;
+        border-radius: 14px;
+        box-shadow: 0 0 0 2px #ffd6ef, 0 0 20px rgba(255, 153, 204, 0.25);
     `;
 
   pipContainer.appendChild(videoEl);
@@ -248,10 +255,10 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
   // Use list-style-image so the icon flows through the same .toolbarbutton-icon
   // slot as the other expanded buttons — that's what gets centered by Zen's CSS.
   const EYE_SVG =
-    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ff69b4' fill-opacity='1'>" +
     "<path d='M12 5c-7 0-11 7-11 7s4 7 11 7 11-7 11-7-4-7-11-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z'/></svg>";
   const EYE_OFF_SVG =
-    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23ff8dc7' fill-opacity='0.92'>" +
     "<path d='M2 2l20 20-1.4 1.4-3.5-3.5A12 12 0 0 1 12 21C5 21 1 14 1 14a20 20 0 0 1 4.6-5.6L.6 3.4 2 2zm10 6a4 4 0 0 1 4 4c0 .6-.1 1.1-.3 1.6l-5.3-5.3c.5-.2 1-.3 1.6-.3zM12 5c7 0 11 7 11 7a20 20 0 0 1-3.7 4.6l-2.1-2.1A8 8 0 0 0 12 7c-.7 0-1.4.1-2 .3L7.7 5C9 4.4 10.4 5 12 5z'/></svg>";
   const eyeUrl = (svg) => `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
 
@@ -262,13 +269,16 @@ console.log("[ZenPiP] main.uc.js TOP-LEVEL executed");
     // Zen's CSS centers and sizes.
     const btn = template.cloneNode(true);
     btn.id = "zen-sidebar-pip-toggle";
-    btn.setAttribute("tooltiptext", "Toggle sidebar PiP");
+    btn.setAttribute("tooltiptext", "\u2728 Toggle sidebar PiP \u2661\uFE0F \u2728");
     btn.removeAttribute("command");
     btn.removeAttribute("oncommand");
     btn.removeAttribute("onclick");
     btn.removeAttribute("data-l10n-id");
     btn.removeAttribute("style");
     btn.style.listStyleImage = eyeUrl(EYE_SVG);
+    btn.style.borderRadius = "9999px";
+    btn.style.background = "linear-gradient(180deg, rgba(255, 240, 248, 0.55), rgba(255, 214, 234, 0.45))";
+    btn.style.boxShadow = "0 0 0 2px #ffc2e6, 0 2px 10px rgba(255, 143, 200, 0.35)";
 
     btn.addEventListener("click", (e) => {
       e.preventDefault();
