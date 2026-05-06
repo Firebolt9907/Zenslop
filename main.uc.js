@@ -1,14 +1,14 @@
 // ==UserScript==
-// @name           Zen Sidebar PiP
+// @name           Zenslop
 // @version        0.1.0
 // @description    Hooks into Zen's sidebar to render active video streams.
 // ==/UserScript==
 
 (function () {
-  if (window.__zenSidebarPiPLoaded) return;
-  window.__zenSidebarPiPLoaded = true;
+  if (window.__zenslopLoaded) return;
+  window.__zenslopLoaded = true;
 
-  const LOG_PREFIX = "[ZenPiP]";
+  const LOG_PREFIX = "[Zenslop]";
   const log = (...a) => console.log(LOG_PREFIX, ...a);
   const warn = (...a) => console.warn(LOG_PREFIX, ...a);
   const err = (...a) => console.error(LOG_PREFIX, ...a);
@@ -477,5 +477,5 @@
     if (e.name !== "NotSupportedError") err("Failed to register JSWindowActor:", e);
   }
 
-  log("Zen Sidebar PiP initialized.");
+  log("Zenslop initialized.");
 })();
