@@ -1,32 +1,51 @@
 # Zenslop
 
-> A [Zen Browser](https://zen-browser.app/) mod that mirrors the currently playing video into the sidebar, anchored above the media controls.
+A [Sine](https://github.com/CosmoCreeper/Sine) mod for [Zen Browser](https://zen-browser.app/) that mirrors the currently playing video into the sidebar, anchored above the media controls.
 
 <!-- HERO IMAGE — full-width screenshot of the sidebar with a video mirrored above the media controls -->
 <p align="center">
-  <img src="docs/hero.png" alt="Zenslop showing a video mirrored above the sidebar media controls" width="720">
+  <img src="docs/hero.png" alt="Zenslop showing a video mirrored above the sidebar media controls" height="300">
 </p>
 
 ---
 
 ## What it does
 
-Zen's sidebar already surfaces a media controls strip whenever a tab is playing audio or video. This mod hooks into that strip and renders a live, low-latency mirror of the actual video frame directly above it — so you can keep an eye on what's playing without leaving the current tab or opening a separate PiP window.
-
-- Mirrors the active `<video>` element from any tab into the sidebar.
-- Anchors to Zen's media controls and tracks them through hover, popup, and animation states.
-- Aspect-aware: vertical sources stay centered and proportional, landscape fills the player width.
-- Toggle button (eye / eye-off) injected next to the existing PiP button so you can hide the mirror without stopping playback.
-- Pads the tab list so your last tabs can still scroll into view above the floating video.
+This mod hooks into the existing media playback controls and surfaces the video directly above it - so you can continue the doomscroll without dealing with adjusting the position of a separate PiP window or hiding the video altogether.
 
 <!-- DEMO GIF — short loop of starting playback in a tab and the mirror appearing in the sidebar -->
 <p align="center">
-  <img src="docs/demo.gif" alt="Demo of starting playback in a tab and the mirror appearing in the sidebar" width="640">
+  <img src="docs/demo.gif" alt="Demo of starting playback in a tab and the PiP appearing in the sidebar" height="640">
 </p>
 
 ---
 
-## How it works
+## Installation
+
+> [!NOTE]
+> This mod is loaded through [Sine](https://github.com/CosmoCreeper/Sine), Zen's userscript loader. If you're loading user-chrome scripts via a different mechanism, just add this to your chrome folder like you would with other sine mods. 
+> 
+> Additionally, this mod requires installing Javascript to work, which is disabled by default for unofficial sources in Sine. If you would like to audit the project for malicious code, you can look at the source code in this repository.
+
+1. Visit [about:settings](about:settings) and go to the "Sine Mods" section
+2. Click the Settings icon to the right of the Install button, and turn on "Enable installing JS from unofficial sources. (unsafe, use at your own risk)" (see note above if hesitant)
+3. Enter `Firebolt9907/Zenslop` into the text input box right under "or, add your own locally from a GitHub repo." and click Install
+4. Restart your browser (important!!)
+
+---
+
+## Featured Forks
+
+### Kawaiislop
+**bboonstra/Kawaiislop/tree/bugfix**
+
+<p align="center">
+  <img src="docs/kawaiislop.png" alt="Picture of Zenslop" height="640">
+</p>
+
+---
+
+## The Technical Stuff
 
 The mod runs in three pieces that bridge Firefox's e10s process boundary:
 
@@ -35,11 +54,6 @@ The mod runs in three pieces that bridge Firefox's e10s process boundary:
 | `main.uc.js` | chrome | Injects the floating video container into the sidebar, registers the `JSWindowActor`, and exposes `window.ZenPiPController`. |
 | `content-actor.js` | content | Watches `playing` / `pause` / `volumechange` on `<video>` elements, captures the stream via `captureStream()`, and forwards it through a same-process `RTCPeerConnection`. |
 | `parent-actor.js` | chrome | Receives the WebRTC offer, answers it, and hands the resulting `MediaStream` to `ZenPiPController.showVideo()`. |
-
-<!-- ARCHITECTURE DIAGRAM — boxes for content actor → WebRTC loopback → parent actor → sidebar UI -->
-<p align="center">
-  <img src="docs/architecture.svg" alt="Architecture: content actor captures the video, WebRTC loopback to the parent actor, parent renders into the sidebar" width="680">
-</p>
 
 ### Why WebRTC for a same-browser mirror?
 
@@ -51,25 +65,6 @@ The connection is tuned for "this is loopback, stop pretending it's the open int
 - `degradationPreference: "maintain-framerate"` so dropped pixels are preferred over dropped frames.
 - `receiver.playoutDelayHint = 0`, `receiver.jitterBufferTarget = 0` so frames render as they arrive instead of buffering up over the first few seconds.
 
----
-
-## Installation
-
-> [!NOTE]
-> This mod is loaded through [Sine](https://github.com/CosmoCreeper/Sine), Zen's userscript loader. If you're loading user-chrome scripts via a different mechanism, adjust the install path accordingly.
-
-1. Clone or download this repo into your Sine mods directory:
-   ```sh
-   cd "$ZEN_PROFILE/chrome/sine-mods"
-   git clone https://github.com/<you>/PIP-Customizations.git "PIP Customizations"
-   ```
-2. Restart Zen.
-3. Play a video in any tab — the mirror appears above the sidebar media controls.
-
-<!-- INSTALL SCREENSHOT — file tree of the sine-mods directory with this folder dropped in -->
-<p align="center">
-  <img src="docs/install-tree.png" alt="Sine mods folder containing the PIP Customizations directory" width="420">
-</p>
 
 ---
 
@@ -151,8 +146,15 @@ Confirm your Firefox build supports `RTCRtpReceiver.jitterBufferTarget` and `pla
 
 ## License
 
-<!-- TODO: pick a license — MIT is the usual default for Zen mods -->
-TBD.
+The MIT License (MIT)
+
+Copyright (c) 2026 Rishit Sharma
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
