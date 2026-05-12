@@ -162,5 +162,5 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Credits
 
-- [Zen Browser](https://zen-browser.app/).
-- [Sine](https://github.com/CosmoCreeper/Sine).
+- [Zen Browser](https://zen-browser.app/)
+- [Sine](https://github.com/CosmoCreeper/Sine)
