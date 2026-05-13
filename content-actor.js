@@ -30,20 +30,20 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     } catch (_) {}
   }
 
-  async handleEvent(event) {
+  handleEvent(event) {
     const target = event.target;
     this._debug("[Zenslop/content]", event.type, target?.tagName, "muted=", target?.muted, "vw=", target?.videoWidth);
     if (!target || target.tagName !== "VIDEO") return;
 
     if (event.type === "playing") {
-      await this._tryStart(target);
+      this._tryStart(target);
       return;
     }
 
     if (event.type === "volumechange") {
       if (this._isAudible(target)) {
         if (!this._encoder && !target.paused && !target.ended) {
-          await this._tryStart(target);
+          this._tryStart(target);
         }
       } else if (target === this._video) {
         this._stopAndNotify("volumechange:muted");
@@ -61,7 +61,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     return !video.muted && video.volume > 0;
   }
 
-  async _tryStart(target) {
+  _tryStart(target) {
     this._debug("[Zenslop/content] tryStart readyState=", target.readyState, "vw=", target.videoWidth, "audible=", this._isAudible(target), "encoderExists=", !!this._encoder);
     if (this._encoder) return;
     if (target.readyState < 2 || target.videoWidth === 0) return;
@@ -83,9 +83,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (videoTracks.length === 0) return;
 
     this._stream = stream;
-    this._video = target;
     this._attachVideoListeners(target);
-    await this._startEncoder(target);
+    this._startEncoder(target);
   }
 
   _attachVideoListeners(video) {
@@ -102,7 +101,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
   }
 
-  async _startEncoder(video) {
+  _startEncoder(video) {
     const win = this.contentWindow;
     const hasVF = typeof win.VideoFrame === "function";
     const hasEnc = typeof win.VideoEncoder === "function";
@@ -118,7 +117,9 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const epoch = ++this._epoch;
 
     let outputCount = 0;
-    const encoder = new win.VideoEncoder({
+    let encoder;
+    try {
+      encoder = new win.VideoEncoder({
       output: (chunk, metadata) => {
         if (outputCount < 3) this._debug("[Zenslop/content] encoder output", outputCount, "type=", chunk.type, "bytes=", chunk.byteLength, "hasConfig=", !!metadata?.decoderConfig);
         outputCount++;
@@ -154,6 +155,11 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         this._stopAndNotify("encoder:error");
       },
     });
+    } catch (e) {
+      this._debug("[Zenslop/content] VideoEncoder ctor threw:", e?.name, e?.message);
+      this._stopAndNotify("encoder:construct");
+      return;
+    }
 
     try {
       encoder.configure({
@@ -172,8 +178,9 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._encoder = encoder;
     this._frameCount = 0;
     this._startTime = performance.now();
-    this._epochForTicks = epoch;
+    this._video = video;
     this._debug("[Zenslop/content] encoder ready", width, "x", height);
+    this._captureAndEncode();
   }
 
   _captureAndEncode() {

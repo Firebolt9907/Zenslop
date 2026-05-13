@@ -22,10 +22,6 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
       console.log("[Zenslop/parent RX]", msg.name, JSON.stringify(msg.data));
     }
 
-    if (msg.name !== "ZenPiP:VideoStopped" && !this._tickInterval) {
-      this._startTicking();
-    }
-
     if (msg.name === "ZenPiP:Debug") {
       if (argsArr && argsArr.length > 0) console.log(...argsArr);
       return;
@@ -36,11 +32,8 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     if (!win) return;
 
     switch (msg.name) {
-      case "ZenPiP:EncoderReady": {
-        // Tick already started above; nothing else needed here.
-        break;
-      }
       case "ZenPiP:Frame": {
+        if (!this._tickInterval) this._startTicking();
         await this._handleFrame(win, msg.data);
         break;
       }
