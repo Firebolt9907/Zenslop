@@ -65,8 +65,13 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
       return false;
     }
 
+    let decodedCount = 0;
     const decoder = new win.VideoDecoder({
       output: (frame) => {
+        decodedCount++;
+        if (decodedCount <= 3 || decodedCount % 120 === 0) {
+          console.log("[Zenslop/parent] decoded frame", decodedCount, "ts=", frame.timestamp);
+        }
         try {
           win.ZenPiPController.drawFrame(frame);
         } catch (e) {

@@ -174,13 +174,18 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._debug("[Zenslop/content] encoder configured", width, "x", height);
 
     let frameCount = 0;
+    const startTime = performance.now();
     const onFrame = (_now, metadata) => {
       if (frameCount < 3) this._debug("[Zenslop/content] rVFC fired", frameCount, "qsize=", encoder.encodeQueueSize, "state=", encoder.state);
       if (this._epoch !== epoch || !this._encoder) return;
       if (encoder.state !== "configured") return;
       if (encoder.encodeQueueSize <= 2) {
         let frame;
-        const ts = Math.round((metadata?.mediaTime ?? 0) * 1_000_000);
+        // Use a monotonic wall-clock timestamp instead of metadata.mediaTime —
+        // mediaTime can jump backwards on MSE buffer swaps or seeks, which
+        // confuses the VP8 encoder/decoder pair and causes the pipeline to
+        // freeze after a few frames.
+        const ts = Math.round((performance.now() - startTime) * 1000);
         if (frameCount < 3) this._debug("[Zenslop/content] pre-VF ts=", ts, "vWxH=", video.videoWidth, "x", video.videoHeight);
         try {
           frame = new win.VideoFrame(video, { timestamp: ts });
