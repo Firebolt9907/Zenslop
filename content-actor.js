@@ -170,18 +170,17 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       return;
     }
     this._encoder = encoder;
-    this._debug("[Zenslop/content] encoder configured", width, "x", height);
-
-    // Frames are pulled by ticks from the parent actor (chrome process),
-    // which isn't subject to background-tab throttling. The parent starts
-    // ticking once it receives ZenPiP:EncoderReady.
     this._frameCount = 0;
     this._startTime = performance.now();
     this._epochForTicks = epoch;
-    this._debug("[Zenslop/content] signaling EncoderReady");
+    // Send EncoderReady FIRST so the parent's tick loop starts even if the
+    // debug-IPC channel coalesces or drops our log. Frames are pulled by ticks
+    // from the parent actor (chrome process), which isn't subject to
+    // background-tab throttling.
     try {
       this.sendAsyncMessage("ZenPiP:EncoderReady", { width, height });
     } catch (_) {}
+    this._debug("[Zenslop/content] encoder configured + EncoderReady sent", width, "x", height);
   }
 
   _captureAndEncode() {
