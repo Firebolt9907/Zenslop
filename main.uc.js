@@ -361,7 +361,10 @@
     },
     showVideo(width, height, browsingContext) {
       setSourceDimensions(width, height);
-      sourceBC = browsingContext || null;
+      const previousSourceBC = sourceBC;
+      const nextSourceBC = browsingContext || null;
+      const sourceChanged = previousSourceBC && nextSourceBC && previousSourceBC !== nextSourceBC;
+      sourceBC = nextSourceBC;
 
       if (animateOutTimer) {
         clearTimeout(animateOutTimer);
@@ -372,7 +375,7 @@
       isStreaming = true;
       startTracking();
 
-      if (wasStreaming) {
+      if (wasStreaming && !sourceChanged) {
         const s = pipContainer.style;
         s.opacity = userHidden ? "0" : "1";
         s.visibility = userHidden ? "hidden" : "visible";
