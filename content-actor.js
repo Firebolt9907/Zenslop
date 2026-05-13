@@ -177,7 +177,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
     this._encoder = encoder;
     this._frameCount = 0;
-    this._startTime = performance.now();
+    this._startTime = this.contentWindow.performance.now();
     this._video = video;
     this._debug("[Zenslop/content] encoder ready", width, "x", height);
     this._captureAndEncode();
@@ -193,7 +193,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (!(video.videoWidth > 0) || video.readyState < 2) return;
 
     const frameCount = this._frameCount;
-    const ts = Math.round((performance.now() - this._startTime) * 1000);
+    const ts = Math.round((this.contentWindow.performance.now() - this._startTime) * 1000);
     let frame;
     try {
       frame = new win.VideoFrame(video, { timestamp: ts });
