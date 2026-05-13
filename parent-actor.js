@@ -62,7 +62,9 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
   }
 
   async _handleFrame(win, payload) {
+    const dataByteLen = payload.data?.byteLength ?? -1;
     if (!this._decoder) {
+      console.log("[Zenslop/parent] handleFrame first chunk, dataBytes=", dataByteLen, "type=", payload.type, "hasConfig=", !!payload.config);
       if (!payload.config) return;
       const ok = this._setupDecoder(win, payload.config);
       if (!ok) return;
@@ -99,24 +101,30 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     }
 
     let decodedCount = 0;
-    const decoder = new win.VideoDecoder({
-      output: (frame) => {
-        decodedCount++;
-        if (decodedCount <= 3 || decodedCount % 120 === 0) {
-          console.log("[Zenslop/parent] decoded frame", decodedCount, "ts=", frame.timestamp);
-        }
-        try {
-          win.ZenPiPController.drawFrame(frame);
-        } catch (e) {
-          console.log("[Zenslop/parent] drawFrame threw:", e?.message || e);
-        }
-        try { frame.close(); } catch (_) {}
-      },
-      error: (e) => {
-        console.log("[Zenslop/parent] decoder error:", e?.message || e);
-        this._handleStop();
-      },
-    });
+    let decoder;
+    try {
+      decoder = new win.VideoDecoder({
+        output: (frame) => {
+          decodedCount++;
+          if (decodedCount <= 3 || decodedCount % 120 === 0) {
+            console.log("[Zenslop/parent] decoded frame", decodedCount, "ts=", frame.timestamp);
+          }
+          try {
+            win.ZenPiPController.drawFrame(frame);
+          } catch (e) {
+            console.log("[Zenslop/parent] drawFrame threw:", e?.message || e);
+          }
+          try { frame.close(); } catch (_) {}
+        },
+        error: (e) => {
+          console.log("[Zenslop/parent] decoder error:", e?.message || e);
+          this._handleStop();
+        },
+      });
+    } catch (e) {
+      console.log("[Zenslop/parent] VideoDecoder ctor threw:", e?.name, e?.message || e);
+      return false;
+    }
 
     try {
       const cfg = {
@@ -133,7 +141,11 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._decoder = decoder;
     console.log("[Zenslop/parent] decoder configured", config.codedWidth, "x", config.codedHeight);
 
-    win.ZenPiPController.showVideo(config.codedWidth, config.codedHeight, this.browsingContext);
+    try {
+      win.ZenPiPController.showVideo(config.codedWidth, config.codedHeight, this.browsingContext);
+    } catch (e) {
+      console.log("[Zenslop/parent] showVideo threw:", e?.name, e?.message || e);
+    }
     this._win = win;
     return true;
   }
