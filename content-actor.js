@@ -106,9 +106,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const win = this.contentWindow;
     const hasVF = typeof win.VideoFrame === "function";
     const hasEnc = typeof win.VideoEncoder === "function";
-    const hasRVFC = typeof video.requestVideoFrameCallback === "function";
-    if (!hasVF || !hasEnc || !hasRVFC) {
-      this._debug("[Zenslop/content] WebCodecs unavailable", "hasVF=", hasVF, "hasEnc=", hasEnc, "hasRVFC=", hasRVFC);
+    if (!hasVF || !hasEnc) {
+      this._debug("[Zenslop/content] WebCodecs unavailable", "hasVF=", hasVF, "hasEnc=", hasEnc);
       this._stopAndNotify("webcodecs:unavailable");
       return;
     }
@@ -173,46 +172,45 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._encoder = encoder;
     this._debug("[Zenslop/content] encoder configured", width, "x", height);
 
-    let frameCount = 0;
-    const startTime = performance.now();
-    const onFrame = (_now, metadata) => {
-      if (frameCount < 3) this._debug("[Zenslop/content] rVFC fired", frameCount, "qsize=", encoder.encodeQueueSize, "state=", encoder.state);
-      if (this._epoch !== epoch || !this._encoder) return;
-      if (encoder.state !== "configured") return;
-      if (encoder.encodeQueueSize <= 2) {
-        let frame;
-        // Use a monotonic wall-clock timestamp instead of metadata.mediaTime —
-        // mediaTime can jump backwards on MSE buffer swaps or seeks, which
-        // confuses the VP8 encoder/decoder pair and causes the pipeline to
-        // freeze after a few frames.
-        const ts = Math.round((performance.now() - startTime) * 1000);
-        if (frameCount < 3) this._debug("[Zenslop/content] pre-VF ts=", ts, "vWxH=", video.videoWidth, "x", video.videoHeight);
-        try {
-          frame = new win.VideoFrame(video, { timestamp: ts });
-        } catch (e) {
-          this._debug("[Zenslop/content] VideoFrame ctor threw:", String(e), e?.name, e?.message);
-          this._stopAndNotify("videoframe:construct");
-          return;
-        }
-        if (frameCount < 3) this._debug("[Zenslop/content] post-VF cw=", frame?.codedWidth, "ch=", frame?.codedHeight, "fmt=", frame?.format);
-        try {
-          encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
-          if (frameCount < 3) this._debug("[Zenslop/content] encode called", frameCount);
-        } catch (e) {
-          this._debug("[Zenslop/content] encode threw:", String(e), e?.name, e?.message);
-        }
-        try { frame.close(); } catch (e) {
-          this._debug("[Zenslop/content] frame.close threw:", String(e));
-        }
-        frameCount++;
-      }
-      try { video.requestVideoFrameCallback(onFrame); } catch (_) {}
-    };
-    this._debug("[Zenslop/content] scheduling rVFC");
-    try { video.requestVideoFrameCallback(onFrame); } catch (e) {
-      this._debug("[Zenslop/content] rVFC schedule threw:", e?.name, e?.message);
-      this._stopAndNotify("rvfc:schedule");
+    // Frames are pulled by ticks from the parent actor (chrome process),
+    // which isn't subject to background-tab throttling. The parent starts
+    // ticking once it receives ZenPiP:EncoderReady.
+    this._frameCount = 0;
+    this._startTime = performance.now();
+    this._epochForTicks = epoch;
+    this._debug("[Zenslop/content] signaling EncoderReady");
+    try {
+      this.sendAsyncMessage("ZenPiP:EncoderReady", { width, height });
+    } catch (_) {}
+  }
+
+  _captureAndEncode() {
+    const encoder = this._encoder;
+    const video = this._video;
+    const win = this.contentWindow;
+    if (!encoder || !video || !win) return;
+    if (encoder.state !== "configured") return;
+    if (encoder.encodeQueueSize > 2) return;
+    if (!(video.videoWidth > 0) || video.readyState < 2) return;
+
+    const frameCount = this._frameCount;
+    const ts = Math.round((performance.now() - this._startTime) * 1000);
+    let frame;
+    try {
+      frame = new win.VideoFrame(video, { timestamp: ts });
+    } catch (e) {
+      this._debug("[Zenslop/content] VideoFrame ctor threw:", String(e), e?.name, e?.message);
+      this._stopAndNotify("videoframe:construct");
+      return;
     }
+    if (frameCount < 3) this._debug("[Zenslop/content] tick frame", frameCount, "fmt=", frame?.format);
+    try {
+      encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
+    } catch (e) {
+      this._debug("[Zenslop/content] encode threw:", String(e), e?.name, e?.message);
+    }
+    try { frame.close(); } catch (_) {}
+    this._frameCount = frameCount + 1;
   }
 
   _stopAndNotify(reason) {
@@ -241,6 +239,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async receiveMessage(msg) {
+    if (msg.name === "ZenPiP:Tick") {
+      this._captureAndEncode();
+      return;
+    }
     if (msg.name === "ZenPiP:Stop") {
       this._stopAndNotify("parent:stop");
     }

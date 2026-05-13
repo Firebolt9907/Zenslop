@@ -4,6 +4,13 @@
 //
 // MediaStreamTrackGenerator isn't available in the chrome window in modern
 // Firefox, so we render to a canvas instead of synthesizing a MediaStream.
+//
+// Frame extraction is driven by a chrome-process setInterval that ticks the
+// content actor at TICK_INTERVAL_MS — rVFC on the content side is throttled
+// to zero in background tabs, which would otherwise stall the mirror whenever
+// the user navigates away from the source tab.
+
+const TICK_INTERVAL_MS = 33; // ~30 fps
 
 export class ZenSidebarPiPParent extends JSWindowActorParent {
   async receiveMessage(msg) {
@@ -17,6 +24,10 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     if (!win) return;
 
     switch (msg.name) {
+      case "ZenPiP:EncoderReady": {
+        this._startTicking();
+        break;
+      }
       case "ZenPiP:Frame": {
         await this._handleFrame(win, msg.data);
         break;
@@ -25,6 +36,23 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
         this._handleStop();
         break;
       }
+    }
+  }
+
+  _startTicking() {
+    this._stopTicking();
+    console.log("[Zenslop/parent] starting tick interval");
+    this._tickInterval = setInterval(() => {
+      try {
+        this.sendAsyncMessage("ZenPiP:Tick", {});
+      } catch (_) {}
+    }, TICK_INTERVAL_MS);
+  }
+
+  _stopTicking() {
+    if (this._tickInterval) {
+      clearInterval(this._tickInterval);
+      this._tickInterval = null;
     }
   }
 
@@ -106,6 +134,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
   }
 
   _handleStop() {
+    this._stopTicking();
     if (this._decoder) {
       try { this._decoder.close(); } catch (_) {}
       this._decoder = null;
