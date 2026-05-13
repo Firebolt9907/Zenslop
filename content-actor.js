@@ -180,22 +180,25 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       if (encoder.state !== "configured") return;
       if (encoder.encodeQueueSize <= 2) {
         let frame;
+        const ts = Math.round((metadata?.mediaTime ?? 0) * 1_000_000);
+        if (frameCount < 3) this._debug("[Zenslop/content] pre-VF ts=", ts, "vWxH=", video.videoWidth, "x", video.videoHeight);
         try {
-          const ts = Math.round((metadata?.mediaTime ?? 0) * 1_000_000);
           frame = new win.VideoFrame(video, { timestamp: ts });
-          if (frameCount < 3) this._debug("[Zenslop/content] VideoFrame constructed", frame.codedWidth, "x", frame.codedHeight);
         } catch (e) {
-          this._debug("[Zenslop/content] VideoFrame ctor threw:", e?.name, e?.message);
+          this._debug("[Zenslop/content] VideoFrame ctor threw:", String(e), e?.name, e?.message);
           this._stopAndNotify("videoframe:construct");
           return;
         }
+        if (frameCount < 3) this._debug("[Zenslop/content] post-VF cw=", frame?.codedWidth, "ch=", frame?.codedHeight, "fmt=", frame?.format);
         try {
           encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
           if (frameCount < 3) this._debug("[Zenslop/content] encode called", frameCount);
         } catch (e) {
-          this._debug("[Zenslop/content] encode threw:", e?.name, e?.message);
+          this._debug("[Zenslop/content] encode threw:", String(e), e?.name, e?.message);
         }
-        frame.close();
+        try { frame.close(); } catch (e) {
+          this._debug("[Zenslop/content] frame.close threw:", String(e));
+        }
         frameCount++;
       }
       try { video.requestVideoFrameCallback(onFrame); } catch (_) {}
