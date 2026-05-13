@@ -1,10 +1,9 @@
 // Chrome-process side. Receives encoded video chunks from the content actor,
-// decodes them with WebCodecs, feeds the resulting frames into a
-// MediaStreamTrackGenerator, and hands the synthesized MediaStream to the
-// chrome window's ZenPiPController.
+// decodes them with WebCodecs, and paints the decoded VideoFrames directly
+// onto the sidebar canvas via ZenPiPController.drawFrame().
 //
-// Replaces the previous WebRTC loopback bridge — chrome-process
-// RTCPeerConnection no longer gathers ICE candidates in modern Firefox.
+// MediaStreamTrackGenerator isn't available in the chrome window in modern
+// Firefox, so we render to a canvas instead of synthesizing a MediaStream.
 
 export class ZenSidebarPiPParent extends JSWindowActorParent {
   async receiveMessage(msg) {
@@ -57,32 +56,23 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
   }
 
   _setupDecoder(win, config) {
-    if (!win.MediaStreamTrackGenerator || !win.VideoDecoder) {
-      console.log("[Zenslop/parent] WebCodecs unavailable in chrome window",
-        "hasGen=", !!win.MediaStreamTrackGenerator, "hasDec=", !!win.VideoDecoder);
+    if (typeof win.VideoDecoder !== "function") {
+      console.log("[Zenslop/parent] VideoDecoder unavailable in chrome window");
       return false;
     }
-
-    let generator;
-    try {
-      generator = new win.MediaStreamTrackGenerator({ kind: "video" });
-    } catch (e) {
-      console.log("[Zenslop/parent] MediaStreamTrackGenerator threw:", e?.message || e);
+    if (!win.ZenPiPController) {
+      console.log("[Zenslop/parent] ZenPiPController missing on win");
       return false;
     }
-    this._generator = generator;
-    this._writer = generator.writable.getWriter();
 
     const decoder = new win.VideoDecoder({
       output: (frame) => {
-        if (!this._writer) {
-          frame.close();
-          return;
+        try {
+          win.ZenPiPController.drawFrame(frame);
+        } catch (e) {
+          console.log("[Zenslop/parent] drawFrame threw:", e?.message || e);
         }
-        this._writer.write(frame).catch((e) => {
-          console.log("[Zenslop/parent] writer.write rejected:", e?.message || e);
-          try { frame.close(); } catch (_) {}
-        });
+        try { frame.close(); } catch (_) {}
       },
       error: (e) => {
         console.log("[Zenslop/parent] decoder error:", e?.message || e);
@@ -105,28 +95,16 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._decoder = decoder;
     console.log("[Zenslop/parent] decoder configured", config.codedWidth, "x", config.codedHeight);
 
-    const stream = new win.MediaStream([generator]);
-    if (win.ZenPiPController) {
-      console.log("[Zenslop/parent] calling showVideo");
-      win.ZenPiPController.showVideo(stream, this.browsingContext);
-      this._win = win;
-    } else {
-      console.log("[Zenslop/parent] ZenPiPController missing on win");
-    }
+    win.ZenPiPController.showVideo(config.codedWidth, config.codedHeight, this.browsingContext);
+    this._win = win;
     return true;
   }
 
   _handleStop() {
-    if (this._writer) {
-      try { this._writer.close(); } catch (_) {}
-      this._writer = null;
-    }
     if (this._decoder) {
       try { this._decoder.close(); } catch (_) {}
       this._decoder = null;
     }
-    this._generator = null;
-
     const win = this._win || this.browsingContext?.topChromeWindow;
     if (win && win.ZenPiPController) {
       win.ZenPiPController.hideVideo();

@@ -58,7 +58,7 @@
       transform-origin: 50% 100%;
       will-change: opacity, transform;
     }
-    #zen-sidebar-pip-container > video {
+    #zen-sidebar-pip-container > canvas {
       width: 100%;
       height: 100%;
       max-width: 100%;
@@ -73,10 +73,9 @@
 
   const pipContainer = document.createElement("div");
   pipContainer.id = "zen-sidebar-pip-container";
-  const videoEl = document.createElement("video");
-  videoEl.autoplay = true;
-  videoEl.muted = true;
-  pipContainer.appendChild(videoEl);
+  const canvasEl = document.createElement("canvas");
+  const canvasCtx = canvasEl.getContext("2d", { alpha: false, desynchronized: true });
+  pipContainer.appendChild(canvasEl);
   document.documentElement.appendChild(pipContainer);
 
   // Position state
@@ -94,13 +93,17 @@
   let animateOutTimer = null;
   let videoAspect = CONFIG.DEFAULT_ASPECT;
 
-  videoEl.addEventListener("loadedmetadata", () => {
-    if (videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
-      videoAspect = videoEl.videoWidth / videoEl.videoHeight;
+  function setSourceDimensions(w, h) {
+    if (!(w > 0) || !(h > 0)) return;
+    if (canvasEl.width !== w) canvasEl.width = w;
+    if (canvasEl.height !== h) canvasEl.height = h;
+    const nextAspect = w / h;
+    if (nextAspect !== videoAspect) {
+      videoAspect = nextAspect;
       lastTop = lastLeft = lastWidth = -1;
       bump();
     }
-  });
+  }
 
   // Pad the tab list so the last tabs can scroll above the floating video.
   let tabListCache = null;
@@ -351,11 +354,13 @@
 
   // Public controller surface invoked by the parent JSWindowActor.
   window.ZenPiPController = {
-    showVideo(stream, browsingContext) {
-      if (videoEl.srcObject && videoEl.srcObject !== stream) {
-        safe(() => videoEl.pause());
-      }
-      videoEl.srcObject = stream;
+    drawFrame(frame) {
+      try {
+        canvasCtx.drawImage(frame, 0, 0, canvasEl.width, canvasEl.height);
+      } catch (_) {}
+    },
+    showVideo(width, height, browsingContext) {
+      setSourceDimensions(width, height);
       sourceBC = browsingContext || null;
 
       if (animateOutTimer) {
@@ -432,10 +437,7 @@
       animateOutTimer = setTimeout(() => {
         animateOutTimer = null;
         animating = false;
-        safe(() => videoEl.pause());
-        videoEl.srcObject = null;
-        videoEl.removeAttribute("src");
-        safe(() => videoEl.load());
+        safe(() => canvasCtx.clearRect(0, 0, canvasEl.width, canvasEl.height));
         sourceBC = null;
         s.display = "none";
         s.transition = "none";
