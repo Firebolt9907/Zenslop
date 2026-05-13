@@ -14,9 +14,13 @@ const TICK_INTERVAL_MS = 33; // ~30 fps
 
 export class ZenSidebarPiPParent extends JSWindowActorParent {
   async receiveMessage(msg) {
-    // Dump everything for diagnosis: name, data type, args length, first arg.
+    // Dump everything for diagnosis.
     const argsArr = Array.isArray(msg.data?.args) ? msg.data.args : null;
-    console.log("[Zenslop/parent RX]", msg.name, "argsLen=", argsArr?.length, "first=", argsArr?.[0]);
+    if (argsArr) {
+      console.log("[Zenslop/parent RX]", msg.name, JSON.stringify(argsArr));
+    } else {
+      console.log("[Zenslop/parent RX]", msg.name, JSON.stringify(msg.data));
+    }
 
     if (msg.name !== "ZenPiP:VideoStopped" && !this._tickInterval) {
       this._startTicking();

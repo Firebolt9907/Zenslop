@@ -173,8 +173,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._frameCount = 0;
     this._startTime = performance.now();
     this._epochForTicks = epoch;
-    // The parent actor already started ticking on the first message of this
-    // cycle (it tick-on-any-activity); no explicit ready handshake needed.
+    this._debug("[Zenslop/content] encoder ready", width, "x", height);
   }
 
   _captureAndEncode() {
