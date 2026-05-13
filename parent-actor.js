@@ -14,6 +14,13 @@ const TICK_INTERVAL_MS = 33; // ~30 fps
 
 export class ZenSidebarPiPParent extends JSWindowActorParent {
   async receiveMessage(msg) {
+    // Any message from content means the actor pair is alive and the content
+    // side is processing media events — start ticking proactively so we don't
+    // depend on a specific handshake message surviving the IPC channel.
+    if (msg.name !== "ZenPiP:VideoStopped" && !this._tickInterval) {
+      this._startTicking();
+    }
+
     if (msg.name === "ZenPiP:Debug") {
       console.log(...(msg.data?.args || []));
       return;
@@ -25,7 +32,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
 
     switch (msg.name) {
       case "ZenPiP:EncoderReady": {
-        this._startTicking();
+        // Tick already started above; nothing else needed here.
         break;
       }
       case "ZenPiP:Frame": {
