@@ -118,8 +118,11 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     let configSent = false;
     const epoch = ++this._epoch;
 
+    let outputCount = 0;
     const encoder = new win.VideoEncoder({
       output: (chunk, metadata) => {
+        if (outputCount < 3) this._debug("[Zenslop/content] encoder output", outputCount, "type=", chunk.type, "bytes=", chunk.byteLength, "hasConfig=", !!metadata?.decoderConfig);
+        outputCount++;
         if (this._epoch !== epoch) return;
         const buf = new ArrayBuffer(chunk.byteLength);
         chunk.copyTo(buf);
@@ -172,27 +175,32 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
     let frameCount = 0;
     const onFrame = (_now, metadata) => {
+      if (frameCount < 3) this._debug("[Zenslop/content] rVFC fired", frameCount, "qsize=", encoder.encodeQueueSize, "state=", encoder.state);
       if (this._epoch !== epoch || !this._encoder) return;
       if (encoder.state !== "configured") return;
       if (encoder.encodeQueueSize <= 2) {
+        let frame;
         try {
           const ts = Math.round((metadata?.mediaTime ?? 0) * 1_000_000);
-          const frame = new win.VideoFrame(video, { timestamp: ts });
-          try {
-            encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
-          } catch (e) {
-            this._debug("[Zenslop/content] encode threw:", e?.name, e?.message);
-          }
-          frame.close();
-          frameCount++;
+          frame = new win.VideoFrame(video, { timestamp: ts });
+          if (frameCount < 3) this._debug("[Zenslop/content] VideoFrame constructed", frame.codedWidth, "x", frame.codedHeight);
         } catch (e) {
           this._debug("[Zenslop/content] VideoFrame ctor threw:", e?.name, e?.message);
           this._stopAndNotify("videoframe:construct");
           return;
         }
+        try {
+          encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
+          if (frameCount < 3) this._debug("[Zenslop/content] encode called", frameCount);
+        } catch (e) {
+          this._debug("[Zenslop/content] encode threw:", e?.name, e?.message);
+        }
+        frame.close();
+        frameCount++;
       }
       try { video.requestVideoFrameCallback(onFrame); } catch (_) {}
     };
+    this._debug("[Zenslop/content] scheduling rVFC");
     try { video.requestVideoFrameCallback(onFrame); } catch (e) {
       this._debug("[Zenslop/content] rVFC schedule threw:", e?.name, e?.message);
       this._stopAndNotify("rvfc:schedule");
