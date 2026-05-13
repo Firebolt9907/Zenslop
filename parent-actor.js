@@ -33,8 +33,14 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
 
     switch (msg.name) {
       case "ZenPiP:Frame": {
-        if (!this._tickInterval) this._startTicking();
-        await this._handleFrame(win, msg.data);
+        if (!this._tickInterval) this._startTicking(win);
+        console.log("[Zenslop/parent] about to call _handleFrame, decoder=", !!this._decoder, "dataType=", typeof msg.data?.data, "dataIsAB=", msg.data?.data instanceof ArrayBuffer, "dataLen=", msg.data?.data?.byteLength);
+        try {
+          await this._handleFrame(win, msg.data);
+        } catch (e) {
+          console.log("[Zenslop/parent] _handleFrame threw:", e?.name, e?.message || e, e?.stack);
+        }
+        console.log("[Zenslop/parent] _handleFrame returned");
         break;
       }
       case "ZenPiP:VideoStopped": {
@@ -44,10 +50,11 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     }
   }
 
-  _startTicking() {
+  _startTicking(win) {
     this._stopTicking();
     console.log("[Zenslop/parent] starting tick interval");
-    this._tickInterval = setInterval(() => {
+    this._timerWindow = win;
+    this._tickInterval = win.setInterval(() => {
       try {
         this.sendAsyncMessage("ZenPiP:Tick", {});
       } catch (_) {}
@@ -56,8 +63,12 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
 
   _stopTicking() {
     if (this._tickInterval) {
-      clearInterval(this._tickInterval);
+      const win = this._timerWindow || this.browsingContext?.topChromeWindow;
+      try {
+        win?.clearInterval(this._tickInterval);
+      } catch (_) {}
       this._tickInterval = null;
+      this._timerWindow = null;
     }
   }
 

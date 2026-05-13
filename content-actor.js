@@ -114,7 +114,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const width = video.videoWidth;
     const height = video.videoHeight;
     let configSent = false;
-    const epoch = ++this._epoch;
+    this._epoch = (this._epoch || 0) + 1;
+    const epoch = this._epoch;
 
     let outputCount = 0;
     let encoder;
