@@ -85,7 +85,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._stream = stream;
     this._video = target;
     this._attachVideoListeners(target);
-    await this._startEncoder(videoTracks[0], target.videoWidth, target.videoHeight);
+    await this._startEncoder(target);
   }
 
   _attachVideoListeners(video) {
@@ -102,28 +102,19 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
   }
 
-  async _startEncoder(track, width, height) {
+  async _startEncoder(video) {
     const win = this.contentWindow;
-    if (!win.MediaStreamTrackProcessor || !win.VideoEncoder) {
-      this._debug("[Zenslop/content] WebCodecs unavailable", "hasProc=", !!win.MediaStreamTrackProcessor, "hasEnc=", !!win.VideoEncoder);
+    const hasVF = typeof win.VideoFrame === "function";
+    const hasEnc = typeof win.VideoEncoder === "function";
+    const hasRVFC = typeof video.requestVideoFrameCallback === "function";
+    if (!hasVF || !hasEnc || !hasRVFC) {
+      this._debug("[Zenslop/content] WebCodecs unavailable", "hasVF=", hasVF, "hasEnc=", hasEnc, "hasRVFC=", hasRVFC);
       this._stopAndNotify("webcodecs:unavailable");
       return;
     }
 
-    track.addEventListener("ended", () => this._stopAndNotify("track:ended:" + track.kind));
-
-    let processor;
-    try {
-      processor = new win.MediaStreamTrackProcessor({ track });
-    } catch (e) {
-      this._debug("[Zenslop/content] MediaStreamTrackProcessor threw:", e?.name, e?.message);
-      this._stopAndNotify("processor:construct");
-      return;
-    }
-    this._processor = processor;
-    const reader = processor.readable.getReader();
-    this._reader = reader;
-
+    const width = video.videoWidth;
+    const height = video.videoHeight;
     let configSent = false;
     const epoch = ++this._epoch;
 
@@ -179,36 +170,32 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._encoder = encoder;
     this._debug("[Zenslop/content] encoder configured", width, "x", height);
 
-    this._pumpFrames(reader, encoder, epoch);
-  }
-
-  async _pumpFrames(reader, encoder, epoch) {
     let frameCount = 0;
-    try {
-      while (this._epoch === epoch && encoder.state === "configured") {
-        const { value: frame, done } = await reader.read();
-        if (done) break;
-        if (this._epoch !== epoch || encoder.state !== "configured") {
-          frame.close();
-          break;
-        }
-        // Drop frames if the encoder is backed up — we'd rather skip than queue.
-        if (encoder.encodeQueueSize > 2) {
-          frame.close();
-          continue;
-        }
+    const onFrame = (_now, metadata) => {
+      if (this._epoch !== epoch || !this._encoder) return;
+      if (encoder.state !== "configured") return;
+      if (encoder.encodeQueueSize <= 2) {
         try {
-          encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
-        } catch (e) {
-          this._debug("[Zenslop/content] encode threw:", e?.name, e?.message);
+          const ts = Math.round((metadata?.mediaTime ?? 0) * 1_000_000);
+          const frame = new win.VideoFrame(video, { timestamp: ts });
+          try {
+            encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
+          } catch (e) {
+            this._debug("[Zenslop/content] encode threw:", e?.name, e?.message);
+          }
           frame.close();
-          break;
+          frameCount++;
+        } catch (e) {
+          this._debug("[Zenslop/content] VideoFrame ctor threw:", e?.name, e?.message);
+          this._stopAndNotify("videoframe:construct");
+          return;
         }
-        frame.close();
-        frameCount++;
       }
-    } catch (e) {
-      this._debug("[Zenslop/content] pump error:", e?.message || String(e));
+      try { video.requestVideoFrameCallback(onFrame); } catch (_) {}
+    };
+    try { video.requestVideoFrameCallback(onFrame); } catch (e) {
+      this._debug("[Zenslop/content] rVFC schedule threw:", e?.name, e?.message);
+      this._stopAndNotify("rvfc:schedule");
     }
   }
 
@@ -223,15 +210,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
   _teardown() {
     this._epoch = (this._epoch || 0) + 1;
-    if (this._reader) {
-      try { this._reader.cancel(); } catch (_) {}
-      this._reader = null;
-    }
     if (this._encoder) {
       try { this._encoder.close(); } catch (_) {}
       this._encoder = null;
     }
-    this._processor = null;
     if (this._stream) {
       try {
         for (const t of this._stream.getTracks()) t.stop();
