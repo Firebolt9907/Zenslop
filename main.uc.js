@@ -109,16 +109,40 @@
   let tabListCache = null;
   function getTabList() {
     if (tabListCache && tabListCache.isConnected) return tabListCache;
-    tabListCache = document.querySelector(TAB_LIST_SELECTORS);
-    return tabListCache;
+    // Check selectors in priority order — innermost scrollable container first.
+    // document.querySelector(comma-list) returns by DOM order, not selector order,
+    // so we iterate manually to guarantee the right target.
+    for (const sel of ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"]) {
+      const el = document.querySelector(sel);
+      if (el) { tabListCache = el; return el; }
+    }
+    return null;
   }
   let lastTabPad = -1;
+  let tabSpacer = null;
   function setTabListPadding(px) {
     if (px === lastTabPad) return;
+    lastTabPad = px;
     const list = getTabList();
     if (!list) return;
-    lastTabPad = px;
+
+    // Apply padding-bottom directly to the container.
     list.style.paddingBottom = px ? px + "px" : "";
+
+    // Also maintain a physical spacer element as a fallback — XUL arrowscrollbox
+    // doesn't always extend its scrollable area from padding-bottom alone, but a
+    // real child element at the bottom reliably creates scroll room.
+    if (px > 0) {
+      if (!tabSpacer) {
+        tabSpacer = document.createElement("div");
+        tabSpacer.id = "zen-sidebar-pip-tab-spacer";
+        tabSpacer.style.cssText = "pointer-events: none; flex-shrink: 0; min-height: 0;";
+      }
+      tabSpacer.style.height = px + "px";
+      if (tabSpacer.parentNode !== list) list.appendChild(tabSpacer);
+    } else if (tabSpacer && tabSpacer.isConnected) {
+      tabSpacer.remove();
+    }
   }
 
   function getMediaTopEdge(walkDescendants) {
@@ -239,6 +263,7 @@
     hoverActive = false;
     lastElevatedTop = null;
     lastElevatedAt = 0;
+    tabListCache = null;
     setTabListPadding(0);
   }
 
@@ -302,7 +327,13 @@
     const existing = findExistingPipButton();
     if (existing && existing.parentNode) {
       const btn = buildToggle(existing);
-      existing.parentNode.insertBefore(btn, existing.nextSibling);
+      const parent = existing.parentNode;
+      parent.insertBefore(btn, existing.nextSibling);
+      // The parent container may be sized only for visible controls (e.g. when
+      // the native PiP button is hidden). Ensure it always expands to fit all
+      // children, including our injected button.
+      parent.style.minWidth = "fit-content";
+      parent.style.overflow = "visible";
       return true;
     }
     return false;
