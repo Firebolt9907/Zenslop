@@ -106,19 +106,48 @@
   }
 
   // Pad the tab list so the last tabs can scroll above the floating video.
-  let tabListCache = null;
-  function getTabList() {
-    if (tabListCache && tabListCache.isConnected) return tabListCache;
-    tabListCache = document.querySelector(TAB_LIST_SELECTORS);
-    return tabListCache;
-  }
+  // Strategy: apply margin-bottom directly to the bottom-most visible tab.
+  // This always extends the scrollable content regardless of which ancestor
+  // is the actual scroll container — host-level padding on Zen's
+  // arrowscrollbox doesn't reach the shadow-DOM scrollbox.
   let lastTabPad = -1;
+  let paddedTab = null;
+  function findBottomMostTab() {
+    const tabs = document.querySelectorAll(".tabbrowser-tab");
+    let best = null, bestBottom = -Infinity;
+    for (const t of tabs) {
+      if (t.hidden) continue;
+      const r = t.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      if (r.bottom > bestBottom) {
+        bestBottom = r.bottom;
+        best = t;
+      }
+    }
+    return best;
+  }
+  function clearPaddedTab() {
+    if (paddedTab && paddedTab.isConnected) paddedTab.style.marginBottom = "";
+    paddedTab = null;
+  }
   function setTabListPadding(px) {
-    if (px === lastTabPad) return;
-    const list = getTabList();
-    if (!list) return;
+    const target = px > 0 ? findBottomMostTab() : null;
+    if (px === lastTabPad && target === paddedTab) return;
     lastTabPad = px;
-    list.style.paddingBottom = px ? px + "px" : "";
+
+    // Also pad every known candidate container — cheap and may help in
+    // browser variants where the host padding actually works.
+    const value = px > 0 ? px + "px" : "";
+    for (const sel of ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"]) {
+      const el = document.querySelector(sel);
+      if (el) el.style.paddingBottom = value;
+    }
+
+    if (target !== paddedTab) clearPaddedTab();
+    if (target) {
+      target.style.marginBottom = value;
+      paddedTab = target;
+    }
   }
 
   function getMediaTopEdge(walkDescendants) {
@@ -302,7 +331,13 @@
     const existing = findExistingPipButton();
     if (existing && existing.parentNode) {
       const btn = buildToggle(existing);
-      existing.parentNode.insertBefore(btn, existing.nextSibling);
+      const parent = existing.parentNode;
+      parent.insertBefore(btn, existing.nextSibling);
+      // The parent container may be sized only for visible controls (e.g. when
+      // the native PiP button is hidden). Ensure it always expands to fit all
+      // children, including our injected button.
+      parent.style.minWidth = "fit-content";
+      parent.style.overflow = "visible";
       return true;
     }
     return false;
