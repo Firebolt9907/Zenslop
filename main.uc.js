@@ -325,6 +325,12 @@
     return rectWidth || el.scrollWidth || el.offsetWidth || 0;
   }
 
+  function getElementHeight(el) {
+    if (!el) return 0;
+    const rectHeight = safe(() => el.getBoundingClientRect().height) || 0;
+    return rectHeight || el.scrollHeight || el.offsetHeight || 0;
+  }
+
   function getControlButtonWidth(parent, fallback) {
     const fallbackWidth = getElementWidth(fallback);
     if (fallbackWidth > 0) return Math.ceil(fallbackWidth);
@@ -341,19 +347,28 @@
     return cssWidth > 0 ? Math.ceil(cssWidth) : 24;
   }
 
-  function applyToggleBoxWidth(parent) {
-    const px = reservedToggleBoxWidth + "px";
-    if (parent.style.minWidth !== px) parent.style.minWidth = px;
-    if (parent.style.width !== px) parent.style.width = px;
-    if (parent.style.maxWidth !== "none") parent.style.maxWidth = "none";
-    if (parent.style.flexShrink !== "0") parent.style.flexShrink = "0";
-    if (parent.style.overflow !== "visible") parent.style.overflow = "visible";
+  function isElementVisible(el) {
+    if (!el || el.hidden || el.hasAttribute("hidden") || el.getAttribute("collapsed") === "true") {
+      return false;
+    }
+    const cs = safe(() => window.getComputedStyle(el));
+    if (!cs || cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) {
+      return false;
+    }
+    return getElementWidth(el) > 0 && getElementHeight(el) > 0;
   }
 
-  function reserveToggleBoxWidth(parent, baseWidth, buttonWidth) {
+  function applyToggleBoxWidth() {
+    if (!toggleParent || !reservedToggleBoxWidth) return;
+    const px = reservedToggleBoxWidth + "px";
+    if (toggleParent.style.minWidth !== px) toggleParent.style.minWidth = px;
+    if (toggleParent.style.overflow !== "visible") toggleParent.style.overflow = "visible";
+  }
+
+  function reserveToggleBoxWidth(baseWidth, buttonWidth) {
     const needed = Math.ceil(baseWidth + buttonWidth);
     if (needed > reservedToggleBoxWidth) reservedToggleBoxWidth = needed;
-    applyToggleBoxWidth(parent);
+    applyToggleBoxWidth();
   }
 
   function buildToggle(template) {
@@ -383,12 +398,18 @@
     if (toggleBtn && toggleBtn.isConnected) return true;
     const existing = findExistingPipButton();
     if (existing && existing.parentNode) {
-      const btn = buildToggle(existing);
       const parent = existing.parentNode;
-      const baseWidth = getElementWidth(parent);
-      parent.insertBefore(btn, existing.nextSibling);
       toggleParent = parent;
-      reserveToggleBoxWidth(parent, baseWidth, getControlButtonWidth(parent, btn));
+      const baseWidth = getElementWidth(parent);
+      const replacingHiddenPip = !isElementVisible(existing);
+      const btn = buildToggle(existing);
+      if (replacingHiddenPip) {
+        parent.insertBefore(btn, existing);
+      } else {
+        parent.insertBefore(btn, existing.nextSibling);
+        reserveToggleBoxWidth(baseWidth, getControlButtonWidth(parent, btn));
+      }
+      applyToggleBoxWidth();
       return true;
     }
     return false;
@@ -402,7 +423,7 @@
   }
   new MutationObserver(() => {
     if (toggleBtn && toggleBtn.isConnected && toggleParent) {
-      applyToggleBoxWidth(toggleParent);
+      applyToggleBoxWidth();
     } else {
       placeToggle();
     }
