@@ -68,18 +68,6 @@
       object-fit: contain;
       display: block;
     }
-    /* Reserve scroll space at the bottom of all known tab-list candidates so
-       the last tabs can be scrolled above the floating video. The variable is
-       driven by setTabListPadding(); it defaults to 0 when no video is shown. */
-    #tabbrowser-arrowscrollbox::after,
-    #zen-tabs-wrapper::after,
-    #tabbrowser-tabs::after {
-      content: "";
-      display: block;
-      height: var(--zenslop-tab-pad, 0px);
-      pointer-events: none;
-      flex-shrink: 0;
-    }
   `;
   document.documentElement.appendChild(styleEl);
 
@@ -118,41 +106,29 @@
   }
 
   // Pad the tab list so the last tabs can scroll above the floating video.
-  // Three complementary strategies run in parallel:
-  //   1. CSS variable --zenslop-tab-pad drives ::after pseudo-elements on all
-  //      known candidate selectors (most reliable, pure CSS, no DOM guessing).
-  //   2. A JS spacer <div> is appended to the detected scrollable container as a
-  //      fallback for elements whose ::after doesn't extend the scroll height.
-  //   3. padding-bottom is applied directly to the same element.
   let tabListCache = null;
   function getTabList() {
     if (tabListCache && tabListCache.isConnected) return tabListCache;
-
-    // Walk up from the first real tab to find the element that is actually
-    // scrolling — this is more reliable than guessing by selector name.
-    const firstTab = document.querySelector(".tabbrowser-tab");
-    if (firstTab) {
-      let cur = firstTab.parentElement;
-      while (cur && cur !== document.documentElement) {
-        if (cur.scrollHeight > cur.clientHeight + 4) {
-          log("tab list (scroll walk):", cur.id || cur.tagName);
-          tabListCache = cur;
-          return cur;
-        }
-        cur = cur.parentElement;
-      }
-    }
-
-    // Fallback to named selectors if the DOM walk came up empty.
-    for (const sel of ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"]) {
+    // Check only the known tab-list candidates — do NOT walk up to ancestors,
+    // which risks targeting the whole sidebar container.
+    // Prefer the candidate that is currently scrollable; fall back to first found.
+    const candidates = ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"];
+    let firstFound = null;
+    for (const sel of candidates) {
       const el = document.querySelector(sel);
-      if (el) {
-        log("tab list (selector):", sel);
+      if (!el) continue;
+      if (!firstFound) firstFound = el;
+      if (el.scrollHeight > el.clientHeight + 4) {
+        log("tab list:", sel, "(scrollable)");
         tabListCache = el;
         return el;
       }
     }
-
+    if (firstFound) {
+      log("tab list:", firstFound.id || firstFound.tagName, "(not yet scrollable, using first found)");
+      tabListCache = firstFound;
+      return firstFound;
+    }
     warn("tab list: no element found");
     return null;
   }
@@ -160,19 +136,12 @@
   let tabSpacer = null;
   function setTabListPadding(px) {
     if (px === lastTabPad) return;
-
-    // Strategy 1: CSS variable — drives ::after rules on all candidates.
-    document.documentElement.style.setProperty("--zenslop-tab-pad", px > 0 ? px + "px" : "0px");
-
     const list = getTabList();
     if (!list) return;
-    lastTabPad = px;  // commit only after confirming an element exists
+    lastTabPad = px;
 
-    // Strategy 2: direct padding-bottom on the found scrollable element.
     list.style.paddingBottom = px > 0 ? px + "px" : "";
 
-    // Strategy 3: physical spacer child — works even when CSS padding on the
-    // host doesn't extend the internal scroll area (common in XUL scrollboxes).
     if (px > 0) {
       if (!tabSpacer) {
         tabSpacer = document.createElement("div");
