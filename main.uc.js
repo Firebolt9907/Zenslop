@@ -106,53 +106,47 @@
   }
 
   // Pad the tab list so the last tabs can scroll above the floating video.
-  let tabListCache = null;
-  function getTabList() {
-    if (tabListCache && tabListCache.isConnected) return tabListCache;
-    // Check only the known tab-list candidates — do NOT walk up to ancestors,
-    // which risks targeting the whole sidebar container.
-    // Prefer the candidate that is currently scrollable; fall back to first found.
-    const candidates = ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"];
-    let firstFound = null;
-    for (const sel of candidates) {
-      const el = document.querySelector(sel);
-      if (!el) continue;
-      if (!firstFound) firstFound = el;
-      if (el.scrollHeight > el.clientHeight + 4) {
-        log("tab list:", sel, "(scrollable)");
-        tabListCache = el;
-        return el;
+  // Strategy: apply margin-bottom directly to the bottom-most visible tab.
+  // This always extends the scrollable content regardless of which ancestor
+  // is the actual scroll container — host-level padding on Zen's
+  // arrowscrollbox doesn't reach the shadow-DOM scrollbox.
+  let lastTabPad = -1;
+  let paddedTab = null;
+  function findBottomMostTab() {
+    const tabs = document.querySelectorAll(".tabbrowser-tab");
+    let best = null, bestBottom = -Infinity;
+    for (const t of tabs) {
+      if (t.hidden) continue;
+      const r = t.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      if (r.bottom > bestBottom) {
+        bestBottom = r.bottom;
+        best = t;
       }
     }
-    if (firstFound) {
-      log("tab list:", firstFound.id || firstFound.tagName, "(not yet scrollable, using first found)");
-      tabListCache = firstFound;
-      return firstFound;
-    }
-    warn("tab list: no element found");
-    return null;
+    return best;
   }
-  let lastTabPad = -1;
-  let tabSpacer = null;
+  function clearPaddedTab() {
+    if (paddedTab && paddedTab.isConnected) paddedTab.style.marginBottom = "";
+    paddedTab = null;
+  }
   function setTabListPadding(px) {
-    if (px === lastTabPad) return;
-    const list = getTabList();
-    if (!list) return;
+    const target = px > 0 ? findBottomMostTab() : null;
+    if (px === lastTabPad && target === paddedTab) return;
     lastTabPad = px;
 
-    list.style.paddingBottom = px > 0 ? px + "px" : "";
+    // Also pad every known candidate container — cheap and may help in
+    // browser variants where the host padding actually works.
+    const value = px > 0 ? px + "px" : "";
+    for (const sel of ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"]) {
+      const el = document.querySelector(sel);
+      if (el) el.style.paddingBottom = value;
+    }
 
-    if (px > 0) {
-      if (!tabSpacer) {
-        tabSpacer = document.createElement("div");
-        tabSpacer.id = "zen-sidebar-pip-tab-spacer";
-        tabSpacer.style.cssText = "pointer-events: none; flex-shrink: 0; min-height: 0;";
-      }
-      tabSpacer.style.height = px + "px";
-      if (tabSpacer.parentNode !== list) list.appendChild(tabSpacer);
-    } else if (tabSpacer && tabSpacer.isConnected) {
-      tabSpacer.remove();
-      list.style.paddingBottom = "";
+    if (target !== paddedTab) clearPaddedTab();
+    if (target) {
+      target.style.marginBottom = value;
+      paddedTab = target;
     }
   }
 
@@ -274,7 +268,6 @@
     hoverActive = false;
     lastElevatedTop = null;
     lastElevatedAt = 0;
-    tabListCache = null;
     setTabListPadding(0);
   }
 
