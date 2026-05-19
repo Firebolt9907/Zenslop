@@ -68,6 +68,18 @@
       object-fit: contain;
       display: block;
     }
+    /* Reserve scroll space at the bottom of all known tab-list candidates so
+       the last tabs can be scrolled above the floating video. The variable is
+       driven by setTabListPadding(); it defaults to 0 when no video is shown. */
+    #tabbrowser-arrowscrollbox::after,
+    #zen-tabs-wrapper::after,
+    #tabbrowser-tabs::after {
+      content: "";
+      display: block;
+      height: var(--zenslop-tab-pad, 0px);
+      pointer-events: none;
+      flex-shrink: 0;
+    }
   `;
   document.documentElement.appendChild(styleEl);
 
@@ -106,39 +118,61 @@
   }
 
   // Pad the tab list so the last tabs can scroll above the floating video.
+  // Three complementary strategies run in parallel:
+  //   1. CSS variable --zenslop-tab-pad drives ::after pseudo-elements on all
+  //      known candidate selectors (most reliable, pure CSS, no DOM guessing).
+  //   2. A JS spacer <div> is appended to the detected scrollable container as a
+  //      fallback for elements whose ::after doesn't extend the scroll height.
+  //   3. padding-bottom is applied directly to the same element.
   let tabListCache = null;
   function getTabList() {
     if (tabListCache && tabListCache.isConnected) return tabListCache;
-    // Check selectors in priority order — innermost scrollable container first.
-    // document.querySelector(comma-list) returns by DOM order, not selector order,
-    // so we iterate manually to guarantee the right target.
+
+    // Walk up from the first real tab to find the element that is actually
+    // scrolling — this is more reliable than guessing by selector name.
+    const firstTab = document.querySelector(".tabbrowser-tab");
+    if (firstTab) {
+      let cur = firstTab.parentElement;
+      while (cur && cur !== document.documentElement) {
+        if (cur.scrollHeight > cur.clientHeight + 4) {
+          log("tab list (scroll walk):", cur.id || cur.tagName);
+          tabListCache = cur;
+          return cur;
+        }
+        cur = cur.parentElement;
+      }
+    }
+
+    // Fallback to named selectors if the DOM walk came up empty.
     for (const sel of ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"]) {
       const el = document.querySelector(sel);
       if (el) {
-        log("tab list target:", sel);
+        log("tab list (selector):", sel);
         tabListCache = el;
         return el;
       }
     }
-    warn("tab list: no matching element found");
+
+    warn("tab list: no element found");
     return null;
   }
   let lastTabPad = -1;
   let tabSpacer = null;
   function setTabListPadding(px) {
     if (px === lastTabPad) return;
+
+    // Strategy 1: CSS variable — drives ::after rules on all candidates.
+    document.documentElement.style.setProperty("--zenslop-tab-pad", px > 0 ? px + "px" : "0px");
+
     const list = getTabList();
     if (!list) return;
-    lastTabPad = px;  // only commit after confirming the element exists
+    lastTabPad = px;  // commit only after confirming an element exists
 
-    log("tab list padding →", px);
+    // Strategy 2: direct padding-bottom on the found scrollable element.
+    list.style.paddingBottom = px > 0 ? px + "px" : "";
 
-    // Apply padding-bottom directly to the container.
-    list.style.paddingBottom = px ? px + "px" : "";
-
-    // Also maintain a physical spacer element as a fallback — XUL arrowscrollbox
-    // doesn't always extend its scrollable area from padding-bottom alone, but a
-    // real child element at the bottom reliably creates scroll room.
+    // Strategy 3: physical spacer child — works even when CSS padding on the
+    // host doesn't extend the internal scroll area (common in XUL scrollboxes).
     if (px > 0) {
       if (!tabSpacer) {
         tabSpacer = document.createElement("div");
@@ -149,6 +183,7 @@
       if (tabSpacer.parentNode !== list) list.appendChild(tabSpacer);
     } else if (tabSpacer && tabSpacer.isConnected) {
       tabSpacer.remove();
+      list.style.paddingBottom = "";
     }
   }
 
