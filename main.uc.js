@@ -316,59 +316,13 @@
   ];
 
   let toggleBtn = null;
-  let toggleParent = null;
-  let reservedToggleBoxWidth = 0;
+  let nativePipBtn = null;
 
-  function getElementWidth(el) {
-    if (!el) return 0;
-    const rectWidth = safe(() => el.getBoundingClientRect().width) || 0;
-    return rectWidth || el.scrollWidth || el.offsetWidth || 0;
-  }
-
-  function getElementHeight(el) {
-    if (!el) return 0;
-    const rectHeight = safe(() => el.getBoundingClientRect().height) || 0;
-    return rectHeight || el.scrollHeight || el.offsetHeight || 0;
-  }
-
-  function getControlButtonWidth(parent, fallback) {
-    const fallbackWidth = getElementWidth(fallback);
-    if (fallbackWidth > 0) return Math.ceil(fallbackWidth);
-
-    const buttons = parent.querySelectorAll("toolbarbutton, button, [role='button']");
-    for (const b of buttons) {
-      if (b === toggleBtn || b === fallback) continue;
-      const width = getElementWidth(b);
-      if (width > 0) return Math.ceil(width);
-    }
-
-    const cs = safe(() => window.getComputedStyle(fallback));
-    const cssWidth = parseFloat(cs?.width) || parseFloat(cs?.minWidth) || 0;
-    return cssWidth > 0 ? Math.ceil(cssWidth) : 24;
-  }
-
-  function isElementVisible(el) {
-    if (!el || el.hidden || el.hasAttribute("hidden") || el.getAttribute("collapsed") === "true") {
-      return false;
-    }
-    const cs = safe(() => window.getComputedStyle(el));
-    if (!cs || cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) {
-      return false;
-    }
-    return getElementWidth(el) > 0 && getElementHeight(el) > 0;
-  }
-
-  function applyToggleBoxWidth() {
-    if (!toggleParent || !reservedToggleBoxWidth) return;
-    const px = reservedToggleBoxWidth + "px";
-    if (toggleParent.style.minWidth !== px) toggleParent.style.minWidth = px;
-    if (toggleParent.style.overflow !== "visible") toggleParent.style.overflow = "visible";
-  }
-
-  function reserveToggleBoxWidth(baseWidth, buttonWidth) {
-    const needed = Math.ceil(baseWidth + buttonWidth);
-    if (needed > reservedToggleBoxWidth) reservedToggleBoxWidth = needed;
-    applyToggleBoxWidth();
+  function parkNativePipButton(btn) {
+    if (!btn || btn === toggleBtn) return;
+    nativePipBtn = btn;
+    btn.style.display = "none";
+    btn.setAttribute("aria-hidden", "true");
   }
 
   function buildToggle(template) {
@@ -395,21 +349,16 @@
   }
 
   function placeToggle() {
-    if (toggleBtn && toggleBtn.isConnected) return true;
+    if (toggleBtn && toggleBtn.isConnected) {
+      parkNativePipButton(nativePipBtn);
+      return true;
+    }
     const existing = findExistingPipButton();
     if (existing && existing.parentNode) {
       const parent = existing.parentNode;
-      toggleParent = parent;
-      const baseWidth = getElementWidth(parent);
-      const replacingHiddenPip = !isElementVisible(existing);
       const btn = buildToggle(existing);
-      if (replacingHiddenPip) {
-        parent.insertBefore(btn, existing);
-      } else {
-        parent.insertBefore(btn, existing.nextSibling);
-        reserveToggleBoxWidth(baseWidth, getControlButtonWidth(parent, btn));
-      }
-      applyToggleBoxWidth();
+      parent.insertBefore(btn, existing);
+      parkNativePipButton(existing);
       return true;
     }
     return false;
@@ -422,11 +371,7 @@
     obs.observe(musicPlayerUI, { childList: true, subtree: true });
   }
   new MutationObserver(() => {
-    if (toggleBtn && toggleBtn.isConnected && toggleParent) {
-      applyToggleBoxWidth();
-    } else {
-      placeToggle();
-    }
+    placeToggle();
   }).observe(musicPlayerUI, {
     attributes: true,
     attributeFilter: ["hidden", "style", "class", "collapsed"],
