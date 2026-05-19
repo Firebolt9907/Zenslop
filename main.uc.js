@@ -68,6 +68,9 @@
       object-fit: contain;
       display: block;
     }
+    #zen-sidebar-pip-toggle {
+      flex: 0 0 auto;
+    }
   `;
   document.documentElement.appendChild(styleEl);
 
@@ -300,9 +303,59 @@
   const eyeUrl = (svg) => `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
   const EYE_URL = eyeUrl(EYE_SVG);
   const EYE_OFF_URL = eyeUrl(EYE_OFF_SVG);
-  const STRIPPED_ATTRS = ["command", "oncommand", "onclick", "data-l10n-id", "style"];
+  const STRIPPED_ATTRS = [
+    "command",
+    "oncommand",
+    "onclick",
+    "data-l10n-id",
+    "style",
+    "hidden",
+    "collapsed",
+    "disabled",
+    "aria-hidden",
+  ];
 
   let toggleBtn = null;
+  let toggleParent = null;
+  let reservedToggleBoxWidth = 0;
+
+  function getElementWidth(el) {
+    if (!el) return 0;
+    const rectWidth = safe(() => el.getBoundingClientRect().width) || 0;
+    return rectWidth || el.scrollWidth || el.offsetWidth || 0;
+  }
+
+  function getControlButtonWidth(parent, fallback) {
+    const fallbackWidth = getElementWidth(fallback);
+    if (fallbackWidth > 0) return Math.ceil(fallbackWidth);
+
+    const buttons = parent.querySelectorAll("toolbarbutton, button, [role='button']");
+    for (const b of buttons) {
+      if (b === toggleBtn || b === fallback) continue;
+      const width = getElementWidth(b);
+      if (width > 0) return Math.ceil(width);
+    }
+
+    const cs = safe(() => window.getComputedStyle(fallback));
+    const cssWidth = parseFloat(cs?.width) || parseFloat(cs?.minWidth) || 0;
+    return cssWidth > 0 ? Math.ceil(cssWidth) : 24;
+  }
+
+  function applyToggleBoxWidth(parent) {
+    const px = reservedToggleBoxWidth + "px";
+    if (parent.style.minWidth !== px) parent.style.minWidth = px;
+    if (parent.style.width !== px) parent.style.width = px;
+    if (parent.style.maxWidth !== "none") parent.style.maxWidth = "none";
+    if (parent.style.flexShrink !== "0") parent.style.flexShrink = "0";
+    if (parent.style.overflow !== "visible") parent.style.overflow = "visible";
+  }
+
+  function reserveToggleBoxWidth(parent, baseWidth, buttonWidth) {
+    const needed = Math.ceil(baseWidth + buttonWidth);
+    if (needed > reservedToggleBoxWidth) reservedToggleBoxWidth = needed;
+    applyToggleBoxWidth(parent);
+  }
+
   function buildToggle(template) {
     const btn = template.cloneNode(true);
     btn.id = "zen-sidebar-pip-toggle";
@@ -332,12 +385,10 @@
     if (existing && existing.parentNode) {
       const btn = buildToggle(existing);
       const parent = existing.parentNode;
+      const baseWidth = getElementWidth(parent);
       parent.insertBefore(btn, existing.nextSibling);
-      // The parent container may be sized only for visible controls (e.g. when
-      // the native PiP button is hidden). Ensure it always expands to fit all
-      // children, including our injected button.
-      parent.style.minWidth = "fit-content";
-      parent.style.overflow = "visible";
+      toggleParent = parent;
+      reserveToggleBoxWidth(parent, baseWidth, getControlButtonWidth(parent, btn));
       return true;
     }
     return false;
@@ -349,6 +400,18 @@
     });
     obs.observe(musicPlayerUI, { childList: true, subtree: true });
   }
+  new MutationObserver(() => {
+    if (toggleBtn && toggleBtn.isConnected && toggleParent) {
+      applyToggleBoxWidth(toggleParent);
+    } else {
+      placeToggle();
+    }
+  }).observe(musicPlayerUI, {
+    attributes: true,
+    attributeFilter: ["hidden", "style", "class", "collapsed"],
+    childList: true,
+    subtree: true,
+  });
 
   // BrowsingContext bookkeeping for click-to-focus origin tab.
   let sourceBC = null;
