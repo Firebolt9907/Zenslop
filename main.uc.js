@@ -12,7 +12,13 @@
   const log = (...a) => console.log(LOG_PREFIX, ...a);
   const warn = (...a) => console.warn(LOG_PREFIX, ...a);
   const err = (...a) => console.error(LOG_PREFIX, ...a);
-  const safe = (fn) => { try { return fn(); } catch (_) { return undefined; } };
+  const safe = (fn) => {
+    try {
+      return fn();
+    } catch (_) {
+      return undefined;
+    }
+  };
 
   const CONFIG = Object.freeze({
     GAP: 6,
@@ -26,8 +32,10 @@
   });
   const ANIM_TRANSITION = `opacity ${CONFIG.ANIM_MS}ms ease, transform ${CONFIG.ANIM_MS}ms ease`;
 
-  const MUSIC_PLAYER_SELECTORS = "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
-  const TAB_LIST_SELECTORS = "#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs";
+  const MUSIC_PLAYER_SELECTORS =
+    "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
+  const TAB_LIST_SELECTORS =
+    "#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs";
   const PIP_BUTTON_SELECTORS = [
     '[id*="pictureinpicture" i]',
     '[class*="pictureinpicture" i]',
@@ -77,12 +85,17 @@
   const pipContainer = document.createElement("div");
   pipContainer.id = "zen-sidebar-pip-container";
   const canvasEl = document.createElement("canvas");
-  const canvasCtx = canvasEl.getContext("2d", { alpha: false, desynchronized: true });
+  const canvasCtx = canvasEl.getContext("2d", {
+    alpha: false,
+    desynchronized: true,
+  });
   pipContainer.appendChild(canvasEl);
   document.documentElement.appendChild(pipContainer);
 
   // Position state
-  let lastTop = -1, lastLeft = -1, lastWidth = -1;
+  let lastTop = -1,
+    lastLeft = -1,
+    lastWidth = -1;
   let lastVisible = null;
   let lastOpacity = NaN;
   let isStreaming = false;
@@ -117,7 +130,8 @@
   let paddedTab = null;
   function findBottomMostTab() {
     const tabs = document.querySelectorAll(".tabbrowser-tab");
-    let best = null, bestBottom = -Infinity;
+    let best = null,
+      bestBottom = -Infinity;
     for (const t of tabs) {
       if (t.hidden) continue;
       const r = t.getBoundingClientRect();
@@ -141,7 +155,11 @@
     // Also pad every known candidate container — cheap and may help in
     // browser variants where the host padding actually works.
     const value = px > 0 ? px + "px" : "";
-    for (const sel of ["#tabbrowser-arrowscrollbox", "#zen-tabs-wrapper", "#tabbrowser-tabs"]) {
+    for (const sel of [
+      "#tabbrowser-arrowscrollbox",
+      "#zen-tabs-wrapper",
+      "#tabbrowser-tabs",
+    ]) {
       const el = document.querySelector(sel);
       if (el) el.style.paddingBottom = value;
     }
@@ -163,7 +181,12 @@
         if (r.width !== 0 && r.height !== 0 && r.top < top) top = r.top;
       }
     }
-    return { top, baseTop: baseRect.top, left: baseRect.left, width: baseRect.width };
+    return {
+      top,
+      baseTop: baseRect.top,
+      left: baseRect.left,
+      width: baseRect.width,
+    };
   }
 
   function getMediaPlayerVisibility() {
@@ -203,7 +226,12 @@
     }
 
     if (effectivelyVisible) {
-      const { top: mediaTopRaw, baseTop, left, width: playerWidth } = getMediaTopEdge(true);
+      const {
+        top: mediaTopRaw,
+        baseTop,
+        left,
+        width: playerWidth,
+      } = getMediaTopEdge(true);
       if (playerWidth !== 0) {
         // Fit the video into a box capped by player width and MAX_HEIGHT.
         let width = playerWidth;
@@ -221,7 +249,10 @@
         if (mediaTopRaw < baseTop - 1) {
           lastElevatedTop = mediaTopRaw;
           lastElevatedAt = now;
-        } else if (lastElevatedTop !== null && now - lastElevatedAt < CONFIG.ELEVATED_HOLD_MS) {
+        } else if (
+          lastElevatedTop !== null &&
+          now - lastElevatedAt < CONFIG.ELEVATED_HOLD_MS
+        ) {
           mediaTop = lastElevatedTop;
           schedule();
         } else {
@@ -229,7 +260,11 @@
         }
 
         const top = mediaTop - CONFIG.GAP - height;
-        if (top !== lastTop || adjustedLeft !== lastLeft || width !== lastWidth) {
+        if (
+          top !== lastTop ||
+          adjustedLeft !== lastLeft ||
+          width !== lastWidth
+        ) {
           const s = pipContainer.style;
           s.width = width + "px";
           s.height = height + "px";
@@ -275,9 +310,20 @@
   }
 
   // Event-driven triggers — far cheaper than polling every frame.
-  musicPlayerUI.addEventListener("mouseenter", () => { hoverActive = true; bump(); });
-  musicPlayerUI.addEventListener("mouseleave", () => { hoverActive = false; bump(); });
-  for (const ev of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
+  musicPlayerUI.addEventListener("mouseenter", () => {
+    hoverActive = true;
+    bump();
+  });
+  musicPlayerUI.addEventListener("mouseleave", () => {
+    hoverActive = false;
+    bump();
+  });
+  for (const ev of [
+    "transitionrun",
+    "transitionend",
+    "animationstart",
+    "animationend",
+  ]) {
     musicPlayerUI.addEventListener(ev, bump);
   }
 
@@ -300,7 +346,8 @@
   const EYE_OFF_SVG =
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
     "<path d='M2 2l20 20-1.4 1.4-3.5-3.5A12 12 0 0 1 12 21C5 21 1 14 1 14a20 20 0 0 1 4.6-5.6L.6 3.4 2 2zm10 6a4 4 0 0 1 4 4c0 .6-.1 1.1-.3 1.6l-5.3-5.3c.5-.2 1-.3 1.6-.3zM12 5c7 0 11 7 11 7a20 20 0 0 1-3.7 4.6l-2.1-2.1A8 8 0 0 0 12 7c-.7 0-1.4.1-2 .3L7.7 5C9 4.4 10.4 5 12 5z'/></svg>";
-  const eyeUrl = (svg) => `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
+  const eyeUrl = (svg) =>
+    `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
   const EYE_URL = eyeUrl(EYE_SVG);
   const EYE_OFF_URL = eyeUrl(EYE_OFF_SVG);
   const STRIPPED_ATTRS = [
@@ -357,7 +404,7 @@
     if (existing && existing.parentNode) {
       const parent = existing.parentNode;
       const btn = buildToggle(existing);
-      const parent = existing.parentNode;
+
       parent.insertBefore(btn, existing.nextSibling);
       // The parent container may be sized only for visible controls (e.g. when
       // the native PiP button is hidden). Ensure it always expands to fit all
@@ -390,23 +437,32 @@
 
   function getActiveActor() {
     if (!sourceBC) return null;
-    return safe(() => sourceBC.currentWindowGlobal?.getActor("ZenSidebarPiP")) || null;
+    return (
+      safe(() => sourceBC.currentWindowGlobal?.getActor("ZenSidebarPiP")) ||
+      null
+    );
   }
 
   // Catch the next PiP window that opens so we can clean up the observer
   // once it's served its purpose.
   function awaitNextPipWindow() {
     let timeoutId = null;
-    const unregister = () => safe(() => Services.ww.unregisterNotification(observer));
+    const unregister = () =>
+      safe(() => Services.ww.unregisterNotification(observer));
     const observer = {
       observe(subject, topic) {
         if (topic !== "domwindowopened") return;
-        subject.addEventListener("load", () => {
-          const wt = subject.document?.documentElement?.getAttribute("windowtype");
-          if (wt !== "Toolkit:PictureInPicture") return;
-          unregister();
-          if (timeoutId) clearTimeout(timeoutId);
-        }, { once: true });
+        subject.addEventListener(
+          "load",
+          () => {
+            const wt =
+              subject.document?.documentElement?.getAttribute("windowtype");
+            if (wt !== "Toolkit:PictureInPicture") return;
+            unregister();
+            if (timeoutId) clearTimeout(timeoutId);
+          },
+          { once: true },
+        );
       },
     };
     Services.ww.registerNotification(observer);
@@ -432,7 +488,8 @@
       setSourceDimensions(width, height);
       const previousSourceBC = sourceBC;
       const nextSourceBC = browsingContext || null;
-      const sourceChanged = previousSourceBC && nextSourceBC && previousSourceBC !== nextSourceBC;
+      const sourceChanged =
+        previousSourceBC && nextSourceBC && previousSourceBC !== nextSourceBC;
       sourceBC = nextSourceBC;
 
       if (animateOutTimer) {
@@ -528,7 +585,9 @@
     const modDir = profileDir.clone();
     for (const seg of ["chrome", "sine-mods", "Zenslop"]) modDir.append(seg);
     const modUri = Services.io.newFileURI(modDir);
-    const resProto = Services.io.getProtocolHandler("resource").QueryInterface(Ci.nsIResProtocolHandler);
+    const resProto = Services.io
+      .getProtocolHandler("resource")
+      .QueryInterface(Ci.nsIResProtocolHandler);
     if (!resProto.hasSubstitution("zen-sidebar-pip")) {
       resProto.setSubstitution("zen-sidebar-pip", modUri);
     }
@@ -548,7 +607,8 @@
       allFrames: true,
     });
   } catch (e) {
-    if (e.name !== "NotSupportedError") err("Failed to register JSWindowActor:", e);
+    if (e.name !== "NotSupportedError")
+      err("Failed to register JSWindowActor:", e);
   }
 
   log("Zenslop initialized.");
