@@ -68,6 +68,9 @@
       object-fit: contain;
       display: block;
     }
+    #zen-sidebar-pip-toggle {
+      flex: 0 0 auto;
+    }
   `;
   document.documentElement.appendChild(styleEl);
 
@@ -300,9 +303,28 @@
   const eyeUrl = (svg) => `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
   const EYE_URL = eyeUrl(EYE_SVG);
   const EYE_OFF_URL = eyeUrl(EYE_OFF_SVG);
-  const STRIPPED_ATTRS = ["command", "oncommand", "onclick", "data-l10n-id", "style"];
+  const STRIPPED_ATTRS = [
+    "command",
+    "oncommand",
+    "onclick",
+    "data-l10n-id",
+    "style",
+    "hidden",
+    "collapsed",
+    "disabled",
+    "aria-hidden",
+  ];
 
   let toggleBtn = null;
+  let nativePipBtn = null;
+
+  function parkNativePipButton(btn) {
+    if (!btn || btn === toggleBtn) return;
+    nativePipBtn = btn;
+    btn.style.display = "none";
+    btn.setAttribute("aria-hidden", "true");
+  }
+
   function buildToggle(template) {
     const btn = template.cloneNode(true);
     btn.id = "zen-sidebar-pip-toggle";
@@ -327,9 +349,13 @@
   }
 
   function placeToggle() {
-    if (toggleBtn && toggleBtn.isConnected) return true;
+    if (toggleBtn && toggleBtn.isConnected) {
+      parkNativePipButton(nativePipBtn);
+      return true;
+    }
     const existing = findExistingPipButton();
     if (existing && existing.parentNode) {
+      const parent = existing.parentNode;
       const btn = buildToggle(existing);
       const parent = existing.parentNode;
       parent.insertBefore(btn, existing.nextSibling);
@@ -349,6 +375,14 @@
     });
     obs.observe(musicPlayerUI, { childList: true, subtree: true });
   }
+  new MutationObserver(() => {
+    placeToggle();
+  }).observe(musicPlayerUI, {
+    attributes: true,
+    attributeFilter: ["hidden", "style", "class", "collapsed"],
+    childList: true,
+    subtree: true,
+  });
 
   // BrowsingContext bookkeeping for click-to-focus origin tab.
   let sourceBC = null;
