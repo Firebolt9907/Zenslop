@@ -233,15 +233,6 @@
         width: playerWidth,
       } = getMediaTopEdge(true);
       if (playerWidth !== 0) {
-        // Fit the video into a box capped by player width and MAX_HEIGHT.
-        let width = playerWidth;
-        let height = width / videoAspect;
-        if (height > CONFIG.MAX_HEIGHT) {
-          height = CONFIG.MAX_HEIGHT;
-          width = height * videoAspect;
-        }
-        const adjustedLeft = left + (playerWidth - width) / 2;
-
         // Hold an elevated (popup-extended) top through brief glitch frames
         // where the descendant walk doesn't surface it.
         const now = performance.now();
@@ -258,6 +249,19 @@
         } else {
           lastElevatedTop = null;
         }
+
+        // Fit the video into a box capped by player width, MAX_HEIGHT, and the
+        // available space above the controls so vertical videos expand upward
+        // rather than overflowing into the space selector / playback controls.
+        const availableHeight = mediaTop - CONFIG.GAP;
+        let width = playerWidth;
+        let height = width / videoAspect;
+        const effectiveMaxHeight = Math.min(CONFIG.MAX_HEIGHT, availableHeight);
+        if (height > effectiveMaxHeight) {
+          height = effectiveMaxHeight;
+          width = height * videoAspect;
+        }
+        const adjustedLeft = left + (playerWidth - width) / 2;
 
         const top = mediaTop - CONFIG.GAP - height;
         if (
