@@ -256,7 +256,7 @@
         const availableHeight = mediaTop - CONFIG.GAP;
         let width = playerWidth;
         let height = width / videoAspect;
-        const effectiveMaxHeight = Math.min(CONFIG.MAX_HEIGHT, availableHeight);
+        const effectiveMaxHeight = Math.min(playerWidth, availableHeight);
         if (height > effectiveMaxHeight) {
           height = effectiveMaxHeight;
           width = height * videoAspect;
@@ -279,7 +279,10 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        setTabListPadding(userHidden ? 0 : Math.ceil(height + CONFIG.GAP * 2));
+        // Cap padding at the 16:9 equivalent height so portrait videos don't
+        // overflow the XUL scroll container and push the controls downward.
+        const padHeight = Math.min(height, playerWidth / CONFIG.DEFAULT_ASPECT);
+        setTabListPadding(userHidden ? 0 : Math.ceil(padHeight + CONFIG.GAP * 2));
       }
     } else {
       setTabListPadding(0);
