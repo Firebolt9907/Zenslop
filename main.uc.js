@@ -25,12 +25,13 @@
     ANIM_MS: 220,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
-    // Reject a sudden one-frame downward jump of the player's top edge larger
-    // than this (px); YouTube briefly reflows the player when a fast-forward
-    // lands in already-buffered content. Held for at most TOP_SPIKE_MAX_HOLDS
-    // frames so a genuine move still commits within ~1-2 frames.
+    // A downward move of the player's top edge larger than this (px) is only
+    // committed after the lower edge holds stable for DOWN_HOLD_MS. YouTube's
+    // controls make the measured edge oscillate for a few seconds after a
+    // fast-forward into buffered content while hovered; this asymmetric hold
+    // lets the PiP rise instantly but resists transient drops.
     TOP_SPIKE_MAX: 32,
-    TOP_SPIKE_MAX_HOLDS: 2,
+    DOWN_HOLD_MS: 400,
     MAX_HEIGHT: 600,
     DEFAULT_ASPECT: 16 / 9,
     PIP_OPEN_DEBOUNCE_MS: 1500,
@@ -126,7 +127,7 @@
   let lastElevatedTop = null;
   let lastElevatedAt = 0;
   let lastCommittedMediaTop = null;
-  let topSpikeHolds = 0;
+  let pendingDownAt = 0;
   let animating = false;
   let animateOutTimer = null;
   let videoAspect = CONFIG.DEFAULT_ASPECT;
@@ -287,19 +288,25 @@
           lastElevatedTop = null;
         }
 
-        // Reject a transient one-frame downward spike of the player's top edge.
-        // Hold the previous position and re-poll; a real move persists and is
-        // committed on a later frame (capped so it can't stall indefinitely).
+        // Asymmetric debounce for the player's top edge: the PiP may rise
+        // immediately (to stay above the controls), but a downward move is only
+        // committed once the lower edge has held stable for DOWN_HOLD_MS. Any
+        // brief return to the higher edge resets the timer, so the transient
+        // oscillation YouTube emits for a few seconds after a fast-forward
+        // (while the controls are hovered) never drops the PiP.
         if (
           lastCommittedMediaTop !== null &&
-          mediaTop - lastCommittedMediaTop > CONFIG.TOP_SPIKE_MAX &&
-          topSpikeHolds < CONFIG.TOP_SPIKE_MAX_HOLDS
+          mediaTop - lastCommittedMediaTop > CONFIG.TOP_SPIKE_MAX
         ) {
-          topSpikeHolds++;
-          schedule();
-          return;
+          if (pendingDownAt === 0) pendingDownAt = now;
+          if (now - pendingDownAt < CONFIG.DOWN_HOLD_MS) {
+            schedule();
+            return;
+          }
+          pendingDownAt = 0;
+        } else {
+          pendingDownAt = 0;
         }
-        topSpikeHolds = 0;
         lastCommittedMediaTop = mediaTop;
 
         const availableHeight = mediaTop - CONFIG.GAP;
@@ -361,7 +368,7 @@
     lastElevatedTop = null;
     lastElevatedAt = 0;
     lastCommittedMediaTop = null;
-    topSpikeHolds = 0;
+    pendingDownAt = 0;
     setTabListPadding(0);
     sourceTabActive = false;
   }
