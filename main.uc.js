@@ -638,6 +638,14 @@
       isStreaming = true;
       startTracking();
 
+      // Always (re)start the frame tick. The parent actor stops ticking on
+      // VideoStopped, so a stop+restart cycle — e.g. YouTube pausing to
+      // rebuffer during a fast-forward — leaves the tick dead. The shortcut
+      // branch below used to return without restarting it, freezing the mirror
+      // on its last (often black) frame with no recovery.
+      const info = actorRegistry.get(browsingContext.id);
+      if (info) info.startTick(info.win || window);
+
       if (wasStreaming && !sourceChanged) {
         const s = pipContainer.style;
         s.opacity = userHidden || sourceTabActive ? "0" : "1";
@@ -674,9 +682,6 @@
           s.transition = "";
         }, CONFIG.ANIM_MS + 60);
       }
-
-      const info = actorRegistry.get(browsingContext.id);
-      if (info) info.startTick(info.win || window);
     },
 
     hideVideo() {
