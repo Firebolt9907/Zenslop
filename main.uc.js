@@ -60,7 +60,7 @@
       display: none;
       border-radius: var(--zen-border-radius);
       overflow: hidden;
-      contain: size layout;
+      contain: strict;
       z-index: 10;
       pointer-events: none;
       transform-origin: 50% 100%;
@@ -78,6 +78,22 @@
     }
     #zen-sidebar-pip-toggle {
       flex: 0 0 auto;
+      max-width: 24px !important;
+      max-height: 24px !important;
+      width: 24px !important;
+      height: 24px !important;
+      margin: 0 2px !important;
+      padding: 0 !important;
+      box-sizing: border-box !important;
+    }
+    [zenslop-parked="true"] {
+      display: none !important;
+      visibility: collapse !important;
+      width: 0 !important;
+      height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: none !important;
     }
   `;
   document.documentElement.appendChild(styleEl);
@@ -128,23 +144,33 @@
   // arrowscrollbox doesn't reach the shadow-DOM scrollbox.
   let lastTabPad = -1;
   let paddedTab = null;
+  let tabsContainer = null;
+  function getTabsContainer() {
+    if (tabsContainer && tabsContainer.isConnected) return tabsContainer;
+    tabsContainer = document.querySelector("#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs");
+    return tabsContainer;
+  }
   function findBottomMostTab() {
-    const tabs = document.querySelectorAll(".tabbrowser-tab");
-    let best = null,
-      bestBottom = -Infinity;
-    for (const t of tabs) {
-      if (t.hidden) continue;
-      const r = t.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) continue;
-      if (r.bottom > bestBottom) {
-        bestBottom = r.bottom;
-        best = t;
+    const container = getTabsContainer();
+    const tabs = container ? container.querySelectorAll(".tabbrowser-tab") : document.querySelectorAll(".tabbrowser-tab");
+    for (let i = tabs.length - 1; i >= 0; i--) {
+      const t = tabs[i];
+      if (t.hidden || t.style.display === "none" || t.getAttribute("collapsed") === "true") {
+        continue;
       }
+      if (t.offsetWidth === 0 || t.offsetHeight === 0) {
+        continue;
+      }
+      return t;
     }
-    return best;
+    return null;
   }
   function clearPaddedTab() {
-    if (paddedTab && paddedTab.isConnected) paddedTab.style.marginBottom = "";
+    if (paddedTab && paddedTab.isConnected) {
+      if (paddedTab.style.marginBottom !== "") {
+        paddedTab.style.marginBottom = "";
+      }
+    }
     paddedTab = null;
   }
   function setTabListPadding(px) {
@@ -152,8 +178,6 @@
     if (px === lastTabPad && target === paddedTab) return;
     lastTabPad = px;
 
-    // Also pad every known candidate container — cheap and may help in
-    // browser variants where the host padding actually works.
     const value = px > 0 ? px + "px" : "";
     for (const sel of [
       "#tabbrowser-arrowscrollbox",
@@ -161,12 +185,16 @@
       "#tabbrowser-tabs",
     ]) {
       const el = document.querySelector(sel);
-      if (el) el.style.paddingBottom = value;
+      if (el && el.style.paddingBottom !== value) {
+        el.style.paddingBottom = value;
+      }
     }
 
     if (target !== paddedTab) clearPaddedTab();
     if (target) {
-      target.style.marginBottom = value;
+      if (target.style.marginBottom !== value) {
+        target.style.marginBottom = value;
+      }
       paddedTab = target;
     }
   }
@@ -174,7 +202,7 @@
   function getMediaTopEdge(walkDescendants) {
     const baseRect = musicPlayerUI.getBoundingClientRect();
     let top = baseRect.top;
-    if (walkDescendants) {
+    if (walkDescendants && (hoverActive || performance.now() < activeUntil)) {
       const kids = musicPlayerUI.querySelectorAll("*");
       for (let i = 0; i < kids.length; i++) {
         const r = kids[i].getBoundingClientRect();
@@ -233,15 +261,6 @@
         width: playerWidth,
       } = getMediaTopEdge(true);
       if (playerWidth !== 0) {
-        // Fit the video into a box capped by player width and MAX_HEIGHT.
-        let width = playerWidth;
-        let height = width / videoAspect;
-        if (height > CONFIG.MAX_HEIGHT) {
-          height = CONFIG.MAX_HEIGHT;
-          width = height * videoAspect;
-        }
-        const adjustedLeft = left + (playerWidth - width) / 2;
-
         // Hold an elevated (popup-extended) top through brief glitch frames
         // where the descendant walk doesn't surface it.
         const now = performance.now();
@@ -259,6 +278,19 @@
           lastElevatedTop = null;
         }
 
+        // Fit the video into a box capped by player width, MAX_HEIGHT, and the
+        // available space above the controls so vertical videos expand upward
+        // rather than overflowing into the space selector / playback controls.
+        const availableHeight = mediaTop - CONFIG.GAP;
+        let width = playerWidth;
+        let height = width / videoAspect;
+        const effectiveMaxHeight = Math.min(playerWidth, availableHeight);
+        if (height > effectiveMaxHeight) {
+          height = effectiveMaxHeight;
+          width = height * videoAspect;
+        }
+        const adjustedLeft = left + (playerWidth - width) / 2;
+
         const top = mediaTop - CONFIG.GAP - height;
         if (
           top !== lastTop ||
@@ -275,7 +307,10 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        setTabListPadding(userHidden ? 0 : Math.ceil(height + CONFIG.GAP * 2));
+        // Cap padding at the 16:9 equivalent height so portrait videos don't
+        // overflow the XUL scroll container and push the controls downward.
+        const padHeight = Math.min(height, playerWidth / CONFIG.DEFAULT_ASPECT);
+        setTabListPadding(userHidden ? 0 : Math.ceil(padHeight + CONFIG.GAP * 2));
       }
     } else {
       setTabListPadding(0);
@@ -368,8 +403,15 @@
   function parkNativePipButton(btn) {
     if (!btn || btn === toggleBtn) return;
     nativePipBtn = btn;
-    btn.style.display = "none";
-    btn.setAttribute("aria-hidden", "true");
+    if (btn.getAttribute("zenslop-parked") !== "true") {
+      btn.setAttribute("zenslop-parked", "true");
+    }
+    if (btn.style.display !== "none") {
+      btn.style.display = "none";
+    }
+    if (btn.getAttribute("aria-hidden") !== "true") {
+      btn.setAttribute("aria-hidden", "true");
+    }
   }
 
   function buildToggle(template) {
@@ -397,7 +439,11 @@
 
   function placeToggle() {
     if (toggleBtn && toggleBtn.isConnected) {
-      parkNativePipButton(nativePipBtn);
+      if (!nativePipBtn || !nativePipBtn.isConnected) {
+        parkNativePipButton(findExistingPipButton());
+      } else {
+        parkNativePipButton(nativePipBtn);
+      }
       return true;
     }
     const existing = findExistingPipButton();
@@ -405,12 +451,7 @@
       const parent = existing.parentNode;
       const btn = buildToggle(existing);
 
-      parent.insertBefore(btn, existing.nextSibling);
-      // The parent container may be sized only for visible controls (e.g. when
-      // the native PiP button is hidden). Ensure it always expands to fit all
-      // children, including our injected button.
-      parent.style.minWidth = "fit-content";
-      parent.style.overflow = "visible";
+      parent.insertBefore(btn, existing);
       return true;
     }
     return false;
@@ -479,9 +520,14 @@
 
   // Public controller surface invoked by the parent JSWindowActor.
   window.ZenPiPController = {
-    drawFrame(frame) {
+    getActiveBC() {
+      return sourceBC;
+    },
+    drawFrame({ buf, width, height }) {
       try {
-        canvasCtx.drawImage(frame, 0, 0, canvasEl.width, canvasEl.height);
+        setSourceDimensions(width, height);
+        const img = new ImageData(new Uint8ClampedArray(buf), width, height);
+        canvasCtx.putImageData(img, 0, 0);
       } catch (_) {}
     },
     showVideo(width, height, browsingContext) {
@@ -489,7 +535,7 @@
       const previousSourceBC = sourceBC;
       const nextSourceBC = browsingContext || null;
       const sourceChanged =
-        previousSourceBC && nextSourceBC && previousSourceBC !== nextSourceBC;
+        previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
       sourceBC = nextSourceBC;
 
       if (animateOutTimer) {
