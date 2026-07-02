@@ -1,7 +1,3 @@
-const { Services } = ChromeUtils.importESModule(
-  "resource://gre/modules/Services.sys.mjs"
-);
-
 const MAX_FRAME_DIMENSION = 480;
 const MAX_FRAMERATE = 30;
 
@@ -21,13 +17,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   // Longest-edge-capped, even-numbered target dimensions.
-  _encodeSize(w, h) {
-    let maxDim = MAX_FRAME_DIMENSION;
-    try {
-      const prefVal = Services.prefs.getStringPref("mod.zenslop.quality", "480");
-      maxDim = parseInt(prefVal, 10) || MAX_FRAME_DIMENSION;
-    } catch (_) {}
-
+  _encodeSize(w, h, maxDim = MAX_FRAME_DIMENSION) {
     const scale = Math.min(1, maxDim / Math.max(w, h));
     let tw = Math.max(2, Math.round(w * scale));
     let th = Math.max(2, Math.round(h * scale));
@@ -95,7 +85,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const win = this.contentWindow;
     const srcWidth = video.videoWidth;
     const srcHeight = video.videoHeight;
-    const { tw, th } = this._encodeSize(srcWidth, srcHeight);
+    const { tw, th } = this._encodeSize(srcWidth, srcHeight, 480);
 
     try {
       this._scaleCanvas = new win.OffscreenCanvas(tw, th);
@@ -108,26 +98,30 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
     this._video = video;
     this._startTime = win.performance.now();
-    this._captureFrame();
+    this._captureFrame(480);
   }
 
-  _captureFrame() {
+  _captureFrame(quality) {
     const video = this._video;
     const ctx = this._scaleCtx;
     const canvas = this._scaleCanvas;
     if (!video || !ctx || !canvas) return;
     if (!(video.videoWidth > 0) || video.readyState < 2) return;
 
-    const tw = canvas.width;
-    const th = canvas.height;
+    const maxDim = parseInt(quality, 10) || 480;
+    const { tw, th } = this._encodeSize(video.videoWidth, video.videoHeight, maxDim);
+    if (canvas.width !== tw || canvas.height !== th) {
+      canvas.width = tw;
+      canvas.height = th;
+    }
 
     try {
-      ctx.drawImage(video, 0, 0, tw, th);
-      const img = ctx.getImageData(0, 0, tw, th);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
       this.sendAsyncMessage("ZenPiP:Frame", {
         buf: img.data.buffer,
-        width: tw,
-        height: th,
+        width: canvas.width,
+        height: canvas.height,
       });
     } catch (e) {
       this._debug("[Zenslop/content] _captureFrame threw:", String(e), e?.name, e?.message);
@@ -164,7 +158,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
   async receiveMessage(msg) {
     if (msg.name === "ZenPiP:Tick") {
-      this._captureFrame();
+      this._captureFrame(msg.data?.quality);
       return;
     }
     if (msg.name === "ZenPiP:Stop") {

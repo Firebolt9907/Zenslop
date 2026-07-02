@@ -535,7 +535,7 @@
       const previousSourceBC = sourceBC;
       const nextSourceBC = browsingContext || null;
       const sourceChanged =
-        previousSourceBC && nextSourceBC && previousSourceBC !== nextSourceBC;
+        previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
       sourceBC = nextSourceBC;
 
       if (animateOutTimer) {

@@ -33,7 +33,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
 
         const activeBC = typeof controller.getActiveBC === "function" ? controller.getActiveBC() : null;
         if (this._tickInterval) {
-          if (activeBC && activeBC !== this.browsingContext) {
+          if (activeBC && activeBC.id !== this.browsingContext.id) {
             this._handleStop();
             return;
           }
@@ -67,7 +67,11 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._timerWindow = win;
     this._tickInterval = win.setInterval(() => {
       try {
-        this.sendAsyncMessage("ZenPiP:Tick", {});
+        let quality = "480";
+        try {
+          quality = win.Services.prefs.getStringPref("mod.zenslop.quality", "480");
+        } catch (_) {}
+        this.sendAsyncMessage("ZenPiP:Tick", { quality });
       } catch (_) {}
     }, TICK_INTERVAL_MS);
   }
@@ -91,7 +95,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     const win = this._win || this.browsingContext?.topChromeWindow;
     if (win && win.ZenPiPController) {
       const activeBC = typeof win.ZenPiPController.getActiveBC === "function" ? win.ZenPiPController.getActiveBC() : null;
-      if (!activeBC || activeBC === this.browsingContext) {
+      if (!activeBC || activeBC.id === this.browsingContext.id) {
         win.ZenPiPController.hideVideo();
       }
     }
