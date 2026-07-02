@@ -51,7 +51,6 @@
     return;
   }
 
-  // Inject a single stylesheet rather than inlining cssText on every node.
   const styleEl = document.createElement("style");
   styleEl.textContent = `
     #zen-sidebar-pip-container {
@@ -108,7 +107,6 @@
   pipContainer.appendChild(canvasEl);
   document.documentElement.appendChild(pipContainer);
 
-  // Position state
   let lastTop = -1,
     lastLeft = -1,
     lastWidth = -1;
@@ -137,11 +135,6 @@
     }
   }
 
-  // Pad the tab list so the last tabs can scroll above the floating video.
-  // Strategy: apply margin-bottom directly to the bottom-most visible tab.
-  // This always extends the scrollable content regardless of which ancestor
-  // is the actual scroll container — host-level padding on Zen's
-  // arrowscrollbox doesn't reach the shadow-DOM scrollbox.
   let lastTabPad = -1;
   let paddedTab = null;
   let tabsContainer = null;
@@ -240,7 +233,7 @@
     if (!isStreaming) return;
 
     const { visible, opacity } = getMediaPlayerVisibility();
-    const effectivelyVisible = visible && !userHidden;
+    const effectivelyVisible = visible && !userHidden && !sourceTabActive;
     if (effectivelyVisible !== lastVisible) {
       pipContainer.style.visibility = effectivelyVisible ? "visible" : "hidden";
       lastVisible = effectivelyVisible;
@@ -261,8 +254,6 @@
         width: playerWidth,
       } = getMediaTopEdge(true);
       if (playerWidth !== 0) {
-        // Hold an elevated (popup-extended) top through brief glitch frames
-        // where the descendant walk doesn't surface it.
         const now = performance.now();
         let mediaTop = mediaTopRaw;
         if (mediaTopRaw < baseTop - 1) {
@@ -278,9 +269,6 @@
           lastElevatedTop = null;
         }
 
-        // Fit the video into a box capped by player width, MAX_HEIGHT, and the
-        // available space above the controls so vertical videos expand upward
-        // rather than overflowing into the space selector / playback controls.
         const availableHeight = mediaTop - CONFIG.GAP;
         let width = playerWidth;
         let height = width / videoAspect;
@@ -307,8 +295,6 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        // Cap padding at the 16:9 equivalent height so portrait videos don't
-        // overflow the XUL scroll container and push the controls downward.
         const padHeight = Math.min(height, playerWidth / CONFIG.DEFAULT_ASPECT);
         setTabListPadding(userHidden ? 0 : Math.ceil(padHeight + CONFIG.GAP * 2));
       }
@@ -342,9 +328,9 @@
     lastElevatedTop = null;
     lastElevatedAt = 0;
     setTabListPadding(0);
+    sourceTabActive = false;
   }
 
-  // Event-driven triggers — far cheaper than polling every frame.
   musicPlayerUI.addEventListener("mouseenter", () => {
     hoverActive = true;
     bump();
@@ -374,7 +360,6 @@
   });
   window.addEventListener("resize", bump);
 
-  // Toggle button (eye / eye-off) injected next to the existing PiP button.
   const EYE_SVG =
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
     "<path d='M12 5c-7 0-11 7-11 7s4 7 11 7 11-7 11-7-4-7-11-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z'/></svg>";
@@ -472,9 +457,23 @@
     subtree: true,
   });
 
-  // BrowsingContext bookkeeping for click-to-focus origin tab.
   let sourceBC = null;
+  let sourceTabActive = false;
   let lastPipOpenAt = 0;
+  const availableSources = new Map();
+  const actorRegistry = new Map();
+
+  function isTabPlaying(bc) {
+    if (!bc) return false;
+    try {
+      for (const tab of gBrowser.tabs) {
+        if (tab.linkedBrowser?.browsingContext?.id === bc.id) {
+          return tab.hasAttribute("soundplaying");
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
 
   function getActiveActor() {
     if (!sourceBC) return null;
@@ -484,8 +483,6 @@
     );
   }
 
-  // Catch the next PiP window that opens so we can clean up the observer
-  // once it's served its purpose.
   function awaitNextPipWindow() {
     let timeoutId = null;
     const unregister = () =>
@@ -518,7 +515,6 @@
     lastPipOpenAt = performance.now();
   });
 
-  // Public controller surface invoked by the parent JSWindowActor.
   window.ZenPiPController = {
     getActiveBC() {
       return sourceBC;
@@ -528,15 +524,93 @@
         setSourceDimensions(width, height);
         const img = new ImageData(new Uint8ClampedArray(buf), width, height);
         canvasCtx.putImageData(img, 0, 0);
-      } catch (_) {}
+      } catch (e) {
+        err("drawFrame error:", e?.name, e?.message);
+      }
     },
-    showVideo(width, height, browsingContext) {
+    setSourceTabActive(active) {
+      if (sourceTabActive === active) return;
+      sourceTabActive = active;
+      if (isStreaming) bump();
+    },
+    registerSource(id, callbacks) {
+      if (!actorRegistry.has(id)) {
+        actorRegistry.set(id, callbacks);
+      }
+    },
+    unregisterSource(id) {
+      actorRegistry.delete(id);
+    },
+    offerVideo(width, height, browsingContext) {
+      const id = browsingContext.id;
+      if (availableSources.has(id)) return;
+      availableSources.set(id, { bc: browsingContext, width, height });
+
+      if (sourceBC && isTabPlaying(sourceBC)) {
+        log("source queued (existing still playing):", id, "active:", sourceBC.id);
+        return;
+      }
+
+      this._activateSource(width, height, browsingContext);
+    },
+    notifySourceStopped(bc) {
+      availableSources.delete(bc.id);
+
+      if (sourceBC && sourceBC.id === bc.id) {
+        if (availableSources.size > 0) {
+          this._activateSourceAfterHide();
+        } else {
+          this.hideVideo();
+        }
+      }
+    },
+    _activateSourceAfterHide() {
+      if (animateOutTimer) return;
+      const s = pipContainer.style;
+      animating = true;
+      s.transition = "none";
+      s.opacity = userHidden ? "0" : "1";
+      s.transform = "scale(1) translateY(0)";
+      void pipContainer.getBoundingClientRect();
+
+      requestAnimationFrame(() => {
+        s.transition = ANIM_TRANSITION;
+        requestAnimationFrame(() => {
+          s.opacity = "0";
+          s.transform = "scale(0.9) translateY(8px)";
+        });
+      });
+
+      animateOutTimer = setTimeout(() => {
+        animateOutTimer = null;
+        animating = false;
+        sourceBC = null;
+        isStreaming = false;
+        stopTracking();
+
+        if (availableSources.size > 0) {
+          const next = availableSources.values().next().value;
+          this._activateSource(next.width, next.height, next.bc);
+        }
+      }, CONFIG.ANIM_MS + 60);
+    },
+    _activateSource(width, height, browsingContext) {
+      availableSources.delete(browsingContext.id);
+      log("showVideo", width, "x", height, "tab", browsingContext?.id);
       setSourceDimensions(width, height);
       const previousSourceBC = sourceBC;
       const nextSourceBC = browsingContext || null;
       const sourceChanged =
         previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
       sourceBC = nextSourceBC;
+
+      if (sourceBC) {
+        try {
+          sourceTabActive = gBrowser?.selectedBrowser?.browsingContext?.id === sourceBC.id;
+        } catch (_) {
+          sourceTabActive = false;
+        }
+      }
 
       if (animateOutTimer) {
         clearTimeout(animateOutTimer);
@@ -549,42 +623,47 @@
 
       if (wasStreaming && !sourceChanged) {
         const s = pipContainer.style;
-        s.opacity = userHidden ? "0" : "1";
-        s.visibility = userHidden ? "hidden" : "visible";
+        s.opacity = userHidden || sourceTabActive ? "0" : "1";
+        s.visibility = userHidden || sourceTabActive ? "hidden" : "visible";
         s.transform = "";
         return;
       }
 
       const s = pipContainer.style;
       s.display = "block";
-      s.visibility = userHidden ? "hidden" : "visible";
+      s.visibility = userHidden || sourceTabActive ? "hidden" : "visible";
 
-      animating = true;
-      // Commit the start state with NO transition. Forcing layout via
-      // getBoundingClientRect alone isn't enough — the browser may coalesce
-      // a same-task `transition: none` -> `transition: ANIM_TRANSITION` swap,
-      // and the opacity:0 start is never observed under no-transition. Using
-      // a double rAF ensures the start frame is painted before we re-enable
-      // the transition and target the end state.
-      s.transition = "none";
-      s.opacity = "0";
-      s.transform = "scale(0.9) translateY(8px)";
-      void pipContainer.getBoundingClientRect();
-
-      requestAnimationFrame(() => {
-        s.transition = ANIM_TRANSITION;
-        requestAnimationFrame(() => {
-          s.opacity = userHidden ? "0" : "1";
-          s.transform = "scale(1) translateY(0)";
-        });
-      });
-      setTimeout(() => {
+      if (sourceTabActive) {
+        isStreaming = true;
         animating = false;
-        lastOpacity = NaN;
-      }, CONFIG.ANIM_MS + 60);
+        startTracking();
+      } else {
+        animating = true;
+        s.transition = "none";
+        s.opacity = "0";
+        s.transform = "scale(0.9) translateY(8px)";
+        void pipContainer.getBoundingClientRect();
+
+        requestAnimationFrame(() => {
+          s.transition = ANIM_TRANSITION;
+          requestAnimationFrame(() => {
+            s.opacity = userHidden ? "0" : "1";
+            s.transform = "scale(1) translateY(0)";
+          });
+        });
+        setTimeout(() => {
+          animating = false;
+          lastOpacity = NaN;
+          s.transition = "";
+        }, CONFIG.ANIM_MS + 60);
+      }
+
+      const info = actorRegistry.get(browsingContext.id);
+      if (info) info.startTick(info.win || window);
     },
 
     hideVideo() {
+      log("hideVideo");
       if (!isStreaming && !animating) return;
       if (animateOutTimer) {
         clearTimeout(animateOutTimer);
@@ -593,9 +672,6 @@
 
       animating = true;
       const s = pipContainer.style;
-      // Pin the current visual state explicitly under no-transition, then
-      // flip transitions on in a rAF so the change to opacity:0 actually
-      // animates from a known starting point.
       s.transition = "none";
       s.opacity = userHidden ? "0" : "1";
       s.transform = "scale(1) translateY(0)";
@@ -615,7 +691,7 @@
         safe(() => canvasCtx.clearRect(0, 0, canvasEl.width, canvasEl.height));
         sourceBC = null;
         s.display = "none";
-        s.transition = "none";
+        s.transition = "";
         s.transform = "";
         isStreaming = false;
         stopTracking();
@@ -625,7 +701,6 @@
     },
   };
 
-  // Register the JSWindowActor that bridges the e10s process gap.
   try {
     const profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
     const modDir = profileDir.clone();

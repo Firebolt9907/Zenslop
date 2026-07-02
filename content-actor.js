@@ -1,8 +1,6 @@
 const MAX_FRAME_DIMENSION = 480;
 const MAX_FRAMERATE = 30;
 
-// Debug logging hops the process boundary via IPC on every call, so it must
-// stay off in normal use. Flip to true only when diagnosing.
 const DEBUG = false;
 
 export class ZenSidebarPiPChild extends JSWindowActorChild {
@@ -16,7 +14,6 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     } catch (_) {}
   }
 
-  // Longest-edge-capped, even-numbered target dimensions.
   _encodeSize(w, h, maxDim = MAX_FRAME_DIMENSION) {
     const scale = Math.min(1, maxDim / Math.max(w, h));
     let tw = Math.max(2, Math.round(w * scale));
@@ -85,20 +82,38 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const win = this.contentWindow;
     const srcWidth = video.videoWidth;
     const srcHeight = video.videoHeight;
-    const { tw, th } = this._encodeSize(srcWidth, srcHeight, 480);
+    const { tw, th } = this._encodeSize(srcWidth, srcHeight);
 
     try {
       this._scaleCanvas = new win.OffscreenCanvas(tw, th);
-      this._scaleCtx = this._scaleCanvas.getContext("2d", { alpha: false });
+      this._scaleCtx = this._scaleCanvas.getContext("2d", {
+        alpha: false,
+        willReadFrequently: true,
+      });
     } catch (e) {
-      this._debug("[Zenslop/content] OffscreenCanvas creation failed:", e);
+      this._debug("[Zenslop/content] canvas creation failed:", e);
       this._stopAndNotify("canvas:construct");
       return;
     }
 
     this._video = video;
     this._startTime = win.performance.now();
-    this._captureFrame(480);
+    this.sendAsyncMessage("ZenPiP:MirrorStarted", {
+      width: srcWidth,
+      height: srcHeight,
+    });
+
+    const doc = this.contentWindow?.document;
+    if (doc && !this._visBound) {
+      this._visBound = () => {
+        const d = this.contentWindow?.document;
+        if (d) this.sendAsyncMessage("ZenPiP:SourceVisibility", { hidden: d.hidden });
+      };
+      doc.addEventListener("visibilitychange", this._visBound);
+    }
+    if (doc) {
+      this.sendAsyncMessage("ZenPiP:SourceVisibility", { hidden: doc.hidden });
+    }
   }
 
   _captureFrame(quality) {
@@ -108,7 +123,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (!video || !ctx || !canvas) return;
     if (!(video.videoWidth > 0) || video.readyState < 2) return;
 
-    const maxDim = parseInt(quality, 10) || 480;
+    const maxDim = parseInt(quality, 10) || MAX_FRAME_DIMENSION;
     const { tw, th } = this._encodeSize(video.videoWidth, video.videoHeight, maxDim);
     if (canvas.width !== tw || canvas.height !== th) {
       canvas.width = tw;
@@ -122,7 +137,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         buf: img.data.buffer,
         width: canvas.width,
         height: canvas.height,
-      });
+      }, [img.data.buffer]);
     } catch (e) {
       this._debug("[Zenslop/content] _captureFrame threw:", String(e), e?.name, e?.message);
     }
@@ -149,6 +164,12 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         this.contentWindow?.removeEventListener("pagehide", this._pageHideBound);
       } catch (_) {}
       this._pageHideBound = null;
+    }
+    if (this._visBound) {
+      try {
+        this.contentWindow?.document.removeEventListener("visibilitychange", this._visBound);
+      } catch (_) {}
+      this._visBound = null;
     }
     this._video = null;
     this._videoListeners = null;
