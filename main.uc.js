@@ -25,6 +25,12 @@
     ANIM_MS: 220,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
+    // Reject a sudden one-frame downward jump of the player's top edge larger
+    // than this (px); YouTube briefly reflows the player when a fast-forward
+    // lands in already-buffered content. Held for at most TOP_SPIKE_MAX_HOLDS
+    // frames so a genuine move still commits within ~1-2 frames.
+    TOP_SPIKE_MAX: 32,
+    TOP_SPIKE_MAX_HOLDS: 2,
     MAX_HEIGHT: 600,
     DEFAULT_ASPECT: 16 / 9,
     PIP_OPEN_DEBOUNCE_MS: 1500,
@@ -119,6 +125,8 @@
   let hoverActive = false;
   let lastElevatedTop = null;
   let lastElevatedAt = 0;
+  let lastCommittedMediaTop = null;
+  let topSpikeHolds = 0;
   let animating = false;
   let animateOutTimer = null;
   let videoAspect = CONFIG.DEFAULT_ASPECT;
@@ -279,6 +287,21 @@
           lastElevatedTop = null;
         }
 
+        // Reject a transient one-frame downward spike of the player's top edge.
+        // Hold the previous position and re-poll; a real move persists and is
+        // committed on a later frame (capped so it can't stall indefinitely).
+        if (
+          lastCommittedMediaTop !== null &&
+          mediaTop - lastCommittedMediaTop > CONFIG.TOP_SPIKE_MAX &&
+          topSpikeHolds < CONFIG.TOP_SPIKE_MAX_HOLDS
+        ) {
+          topSpikeHolds++;
+          schedule();
+          return;
+        }
+        topSpikeHolds = 0;
+        lastCommittedMediaTop = mediaTop;
+
         const availableHeight = mediaTop - CONFIG.GAP;
         let width = playerWidth;
         let height = width / videoAspect;
@@ -337,6 +360,8 @@
     hoverActive = false;
     lastElevatedTop = null;
     lastElevatedAt = 0;
+    lastCommittedMediaTop = null;
+    topSpikeHolds = 0;
     setTabListPadding(0);
     sourceTabActive = false;
   }
