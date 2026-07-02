@@ -133,10 +133,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const canvas = this._scaleCanvas;
     if (!video || !ctx || !canvas) return;
     if (!(video.videoWidth > 0) || video.readyState < 2) return;
-    // While seeking (fast-forward/scrub) the element often still reports
-    // readyState 2 but has no decoded frame at the new position, so drawImage
-    // reads back black. Hold the last good frame until the seek settles.
-    if (video.seeking) return;
+    // Note: we intentionally do NOT bail on video.seeking here. Holding the
+    // last frame through a fast-forward reads as a disruptive "buffering"
+    // freeze, and for music videos the visual is secondary — keeping the feed
+    // live is preferable to a stall.
 
     const maxDim = parseInt(quality, 10) || MAX_FRAME_DIMENSION;
     const { tw, th } = this._encodeSize(video.videoWidth, video.videoHeight, maxDim);
