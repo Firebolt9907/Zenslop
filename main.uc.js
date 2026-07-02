@@ -288,26 +288,32 @@
           lastElevatedTop = null;
         }
 
-        // Asymmetric debounce for the player's top edge: the PiP may rise
+        // Asymmetric hold for the player's top edge: the PiP may rise
         // immediately (to stay above the controls), but a downward move is only
-        // committed once the lower edge has held stable for DOWN_HOLD_MS. Any
-        // brief return to the higher edge resets the timer, so the transient
-        // oscillation YouTube emits for a few seconds after a fast-forward
-        // (while the controls are hovered) never drops the PiP.
+        // committed once the lower edge has held stable for DOWN_HOLD_MS. While
+        // holding we substitute the last committed (higher) edge rather than
+        // skipping the frame, so the position still updates (left/width/aspect)
+        // and always has a value — but doesn't drop for the transient control
+        // oscillation YouTube emits for a few seconds after a fast-forward or a
+        // pause/play while the controls are hovered. The reference persists
+        // across stop/restart (see stopTracking) so pause/play keeps its stable
+        // pre-pause baseline instead of re-seeding mid-oscillation.
         if (
           lastCommittedMediaTop !== null &&
           mediaTop - lastCommittedMediaTop > CONFIG.TOP_SPIKE_MAX
         ) {
           if (pendingDownAt === 0) pendingDownAt = now;
           if (now - pendingDownAt < CONFIG.DOWN_HOLD_MS) {
+            mediaTop = lastCommittedMediaTop;
             schedule();
-            return;
+          } else {
+            pendingDownAt = 0;
+            lastCommittedMediaTop = mediaTop;
           }
-          pendingDownAt = 0;
         } else {
           pendingDownAt = 0;
+          lastCommittedMediaTop = mediaTop;
         }
-        lastCommittedMediaTop = mediaTop;
 
         const availableHeight = mediaTop - CONFIG.GAP;
         let width = playerWidth;
@@ -367,7 +373,11 @@
     hoverActive = false;
     lastElevatedTop = null;
     lastElevatedAt = 0;
-    lastCommittedMediaTop = null;
+    // NB: lastCommittedMediaTop is intentionally NOT reset here. The sidebar
+    // player's top edge is stable across a pause/play, so keeping the reference
+    // lets the asymmetric hold resist the transient control oscillation on
+    // restart instead of re-seeding mid-glitch. (pendingDownAt is reset — a
+    // fresh timer per stream is fine and self-heals on the next up-frame.)
     pendingDownAt = 0;
     setTabListPadding(0);
     sourceTabActive = false;
