@@ -79,6 +79,15 @@
     #zen-sidebar-pip-toggle {
       flex: 0 0 auto;
     }
+    [zenslop-parked="true"] {
+      display: none !important;
+      visibility: collapse !important;
+      width: 0 !important;
+      height: 0 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: none !important;
+    }
   `;
   document.documentElement.appendChild(styleEl);
 
@@ -186,7 +195,7 @@
   function getMediaTopEdge(walkDescendants) {
     const baseRect = musicPlayerUI.getBoundingClientRect();
     let top = baseRect.top;
-    if (walkDescendants && hoverActive) {
+    if (walkDescendants && (hoverActive || performance.now() < activeUntil)) {
       const kids = musicPlayerUI.querySelectorAll("*");
       for (let i = 0; i < kids.length; i++) {
         const r = kids[i].getBoundingClientRect();
@@ -387,6 +396,9 @@
   function parkNativePipButton(btn) {
     if (!btn || btn === toggleBtn) return;
     nativePipBtn = btn;
+    if (btn.getAttribute("zenslop-parked") !== "true") {
+      btn.setAttribute("zenslop-parked", "true");
+    }
     if (btn.style.display !== "none") {
       btn.style.display = "none";
     }
