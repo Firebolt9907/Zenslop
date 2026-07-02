@@ -198,8 +198,18 @@
     if (walkDescendants && (hoverActive || performance.now() < activeUntil)) {
       const kids = musicPlayerUI.querySelectorAll("*");
       for (let i = 0; i < kids.length; i++) {
-        const r = kids[i].getBoundingClientRect();
-        if (r.width !== 0 && r.height !== 0 && r.top < top) top = r.top;
+        const kid = kids[i];
+        const r = kid.getBoundingClientRect();
+        if (r.width !== 0 && r.height !== 0 && r.top < top) {
+          const style = window.getComputedStyle(kid);
+          if (style.position === "absolute" || style.position === "fixed") {
+            continue;
+          }
+          if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") {
+            continue;
+          }
+          top = r.top;
+        }
       }
     }
     return {
@@ -519,11 +529,22 @@
     getActiveBC() {
       return sourceBC;
     },
-    drawFrame({ buf, width, height }) {
+    drawFrame({ buf, blob, width, height }) {
       try {
         setSourceDimensions(width, height);
-        const img = new ImageData(new Uint8ClampedArray(buf), width, height);
-        canvasCtx.putImageData(img, 0, 0);
+        if (blob) {
+          createImageBitmap(blob)
+            .then((bitmap) => {
+              if (isStreaming) {
+                canvasCtx.drawImage(bitmap, 0, 0, canvasEl.width, canvasEl.height);
+              }
+              bitmap.close();
+            })
+            .catch(() => {});
+        } else if (buf) {
+          const img = new ImageData(new Uint8ClampedArray(buf), width, height);
+          canvasCtx.putImageData(img, 0, 0);
+        }
       } catch (e) {
         err("drawFrame error:", e?.name, e?.message);
       }
@@ -546,7 +567,11 @@
       if (availableSources.has(id)) return;
       availableSources.set(id, { bc: browsingContext, width, height });
 
-      if (sourceBC && isTabPlaying(sourceBC)) {
+      // Only defer when a *different* tab is already mirroring. A re-offer from
+      // the same tab (e.g. YouTube swapping an ad for the real video on the same
+      // <video>, which fires emptied -> playing) must re-activate immediately
+      // instead of queuing behind its own in-flight hide animation.
+      if (sourceBC && sourceBC.id !== id && isTabPlaying(sourceBC)) {
         log("source queued (existing still playing):", id, "active:", sourceBC.id);
         return;
       }
@@ -613,8 +638,11 @@
       }
 
       if (animateOutTimer) {
+        // We're pre-empting an in-flight hide to re-activate; we're no longer
+        // animating out, so clear the flag or it stays stuck true.
         clearTimeout(animateOutTimer);
         animateOutTimer = null;
+        animating = false;
       }
 
       const wasStreaming = isStreaming;
@@ -697,6 +725,13 @@
         stopTracking();
         lastOpacity = NaN;
         lastVisible = null;
+
+        // A different source may have been queued while this hide was running;
+        // drain it so it isn't stranded until the next pause/play.
+        if (availableSources.size > 0) {
+          const next = availableSources.values().next().value;
+          this._activateSource(next.width, next.height, next.bc);
+        }
       }, CONFIG.ANIM_MS + 60);
     },
   };

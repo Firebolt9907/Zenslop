@@ -6,6 +6,10 @@
     "defaultValue": "480",
     "options": [
       {
+        "label": "Compact (240p)",
+        "value": "240"
+      },
+      {
         "label": "Low (360p)",
         "value": "360"
       },

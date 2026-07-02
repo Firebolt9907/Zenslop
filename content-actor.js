@@ -84,19 +84,31 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const srcHeight = video.videoHeight;
     const { tw, th } = this._encodeSize(srcWidth, srcHeight);
 
+    const ctxOpts = { alpha: false, willReadFrequently: true };
     try {
-      this._scaleCanvas = new win.OffscreenCanvas(tw, th);
-      this._scaleCtx = this._scaleCanvas.getContext("2d", {
-        alpha: false,
-        willReadFrequently: true,
-      });
+      if (typeof win.OffscreenCanvas === "function") {
+        this._scaleCanvas = new win.OffscreenCanvas(tw, th);
+      } else {
+        this._scaleCanvas = win.document.createElement("canvas");
+        this._scaleCanvas.width = tw;
+        this._scaleCanvas.height = th;
+      }
+      this._scaleCtx = this._scaleCanvas.getContext("2d", ctxOpts);
     } catch (e) {
-      this._debug("[Zenslop/content] canvas creation failed:", e);
-      this._stopAndNotify("canvas:construct");
-      return;
+      try {
+        this._scaleCanvas = win.document.createElement("canvas");
+        this._scaleCanvas.width = tw;
+        this._scaleCanvas.height = th;
+        this._scaleCtx = this._scaleCanvas.getContext("2d", ctxOpts);
+      } catch (err2) {
+        this._debug("[Zenslop/content] canvas creation failed:", err2);
+        this._stopAndNotify("canvas:construct");
+        return;
+      }
     }
 
     this._video = video;
+    this._capturing = false;
     this._startTime = win.performance.now();
     this.sendAsyncMessage("ZenPiP:MirrorStarted", {
       width: srcWidth,
@@ -120,26 +132,120 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const video = this._video;
     const ctx = this._scaleCtx;
     const canvas = this._scaleCanvas;
-    if (!video || !ctx || !canvas) return;
+    const win = this.contentWindow;
+    if (!video || !ctx || !canvas || !win) return;
     if (!(video.videoWidth > 0) || video.readyState < 2) return;
+
+    // Drop ticks that land while a previous frame is still encoding so the
+    // async encode/IPC pipeline can't queue up and fall behind.
+    if (this._capturing) return;
 
     const maxDim = parseInt(quality, 10) || MAX_FRAME_DIMENSION;
     const { tw, th } = this._encodeSize(video.videoWidth, video.videoHeight, maxDim);
-    if (canvas.width !== tw || canvas.height !== th) {
-      canvas.width = tw;
-      canvas.height = th;
-    }
 
-    try {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      this.sendAsyncMessage("ZenPiP:Frame", {
-        buf: img.data.buffer,
-        width: canvas.width,
-        height: canvas.height,
-      }, [img.data.buffer]);
-    } catch (e) {
-      this._debug("[Zenslop/content] _captureFrame threw:", String(e), e?.name, e?.message);
+    this._capturing = true;
+
+    // Encode the drawn canvas and ship it. Prefer a JPEG blob (small IPC
+    // payload) and fall back to a transferable raw RGBA buffer.
+    const shipCanvas = () => {
+      const done = () => { this._capturing = false; };
+
+      const sendBlob = (blob) => {
+        if (blob && this._video) {
+          this.sendAsyncMessage("ZenPiP:Frame", { blob, width: tw, height: th });
+        }
+        done();
+      };
+
+      const sendRaw = () => {
+        try {
+          const img = ctx.getImageData(0, 0, tw, th);
+          this.sendAsyncMessage("ZenPiP:Frame", {
+            buf: img.data.buffer,
+            width: tw,
+            height: th,
+          }, [img.data.buffer]);
+        } catch (e) {
+          this._debug("[Zenslop/content] raw fallback failed:", String(e));
+        } finally {
+          done();
+        }
+      };
+
+      if (typeof canvas.convertToBlob === "function") {
+        canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 })
+          .then(sendBlob)
+          .catch((err) => {
+            this._debug("[Zenslop/content] convertToBlob failed:", String(err));
+            if (typeof canvas.toBlob === "function") {
+              canvas.toBlob(sendBlob, "image/jpeg", 0.8);
+            } else {
+              sendRaw();
+            }
+          });
+      } else if (typeof canvas.toBlob === "function") {
+        canvas.toBlob(sendBlob, "image/jpeg", 0.8);
+      } else {
+        sendRaw();
+      }
+    };
+
+    // GPU-accelerated downscale via createImageBitmap; fall back to a direct
+    // drawImage from the video element if it's unavailable or throws.
+    const drawDirect = () => {
+      if (canvas.width !== tw || canvas.height !== th) {
+        canvas.width = tw;
+        canvas.height = th;
+      }
+      ctx.drawImage(video, 0, 0, tw, th);
+      shipCanvas();
+    };
+
+    if (typeof win.createImageBitmap === "function") {
+      win.createImageBitmap(video, {
+        resizeWidth: tw,
+        resizeHeight: th,
+        resizeQuality: "low",
+      })
+        .then((bitmap) => {
+          if (!this._video) {
+            bitmap.close();
+            this._capturing = false;
+            return;
+          }
+          if (canvas.width !== tw || canvas.height !== th) {
+            canvas.width = tw;
+            canvas.height = th;
+          }
+          try {
+            ctx.drawImage(bitmap, 0, 0);
+            bitmap.close();
+            shipCanvas();
+          } catch (e) {
+            this._debug("[Zenslop/content] drawImage(bitmap) failed:", String(e));
+            this._capturing = false;
+          }
+        })
+        .catch((e) => {
+          this._debug("[Zenslop/content] createImageBitmap failed, falling back:", String(e));
+          try {
+            if (!this._video) {
+              this._capturing = false;
+              return;
+            }
+            drawDirect();
+          } catch (err2) {
+            this._debug("[Zenslop/content] fallback drawImage failed:", String(err2));
+            this._capturing = false;
+          }
+        });
+    } else {
+      try {
+        drawDirect();
+      } catch (e) {
+        this._debug("[Zenslop/content] _captureFrame threw:", String(e), e?.name, e?.message);
+        this._capturing = false;
+      }
     }
   }
 
@@ -175,6 +281,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._videoListeners = null;
     this._scaleCanvas = null;
     this._scaleCtx = null;
+    this._capturing = false;
   }
 
   async receiveMessage(msg) {
