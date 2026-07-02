@@ -1,11 +1,6 @@
-// Content-process side of the bridge. Captures the playing <video> stream,
-// downscales its frames to an OffscreenCanvas, and forwards the raw RGBA
-// buffers to the chrome process via JSWindowActor IPC.
-//
-// Reliability rules:
-//  * Only one stream is mirrored per actor at a time.
-//  * Any signal that the source is gone (pause, ended, emptied, pagehide)
-//    tears down and notifies the parent so the chrome UI hides.
+const { Services } = ChromeUtils.importESModule(
+  "resource://gre/modules/Services.sys.mjs"
+);
 
 const MAX_FRAME_DIMENSION = 480;
 const MAX_FRAMERATE = 30;
@@ -27,7 +22,13 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
   // Longest-edge-capped, even-numbered target dimensions.
   _encodeSize(w, h) {
-    const scale = Math.min(1, MAX_FRAME_DIMENSION / Math.max(w, h));
+    let maxDim = MAX_FRAME_DIMENSION;
+    try {
+      const prefVal = Services.prefs.getStringPref("mod.zenslop.quality", "480");
+      maxDim = parseInt(prefVal, 10) || MAX_FRAME_DIMENSION;
+    } catch (_) {}
+
+    const scale = Math.min(1, maxDim / Math.max(w, h));
     let tw = Math.max(2, Math.round(w * scale));
     let th = Math.max(2, Math.round(h * scale));
     tw -= tw % 2;

@@ -1,0 +1,22 @@
+[
+  {
+    "property": "mod.zenslop.quality",
+    "label": "Video Quality",
+    "type": "dropdown",
+    "defaultValue": "480",
+    "options": [
+      {
+        "label": "Low (360p)",
+        "value": "360"
+      },
+      {
+        "label": "Medium (480p)",
+        "value": "480"
+      },
+      {
+        "label": "High (640p)",
+        "value": "640"
+      }
+    ]
+  }
+]

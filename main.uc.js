@@ -78,6 +78,13 @@
     }
     #zen-sidebar-pip-toggle {
       flex: 0 0 auto;
+      max-width: 24px !important;
+      max-height: 24px !important;
+      width: 24px !important;
+      height: 24px !important;
+      margin: 0 2px !important;
+      padding: 0 !important;
+      box-sizing: border-box !important;
     }
     [zenslop-parked="true"] {
       display: none !important;
@@ -444,12 +451,7 @@
       const parent = existing.parentNode;
       const btn = buildToggle(existing);
 
-      parent.insertBefore(btn, existing.nextSibling);
-      // The parent container may be sized only for visible controls (e.g. when
-      // the native PiP button is hidden). Ensure it always expands to fit all
-      // children, including our injected button.
-      parent.style.minWidth = "fit-content";
-      parent.style.overflow = "visible";
+      parent.insertBefore(btn, existing);
       return true;
     }
     return false;
