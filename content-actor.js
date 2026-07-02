@@ -1,33 +1,38 @@
 // Content-process side of the bridge. Captures the playing <video> stream,
-// encodes its frames with WebCodecs, and forwards the encoded chunks to the
-// chrome process via JSWindowActor IPC.
-//
-// Why not WebRTC? Modern Firefox (post the WebRTC-out-of-parent-process
-// refactor) doesn't gather ICE candidates for an RTCPeerConnection constructed
-// in a chrome window, so a loopback PC between content and chrome never
-// converges. WebCodecs over IPC is the working substitute: encoded chunks are
-// ArrayBuffers and transfer cleanly across the actor boundary.
+// downscales its frames to an OffscreenCanvas, and forwards the raw RGBA
+// buffers to the chrome process via JSWindowActor IPC.
 //
 // Reliability rules:
 //  * Only one stream is mirrored per actor at a time.
-//  * Any signal that the source is gone (pause, ended, emptied, pagehide,
-//    track.onended) tears down and notifies the parent so the chrome UI hides.
-//  * Encode is bitrate/framerate capped — software encode of full-res YouTube
-//    will otherwise pin a core.
+//  * Any signal that the source is gone (pause, ended, emptied, pagehide)
+//    tears down and notifies the parent so the chrome UI hides.
 
-const MAX_BITRATE_BPS = 8_000_000;
-const MAX_FRAMERATE = 60;
-const CODEC = "vp8";
-const KEYFRAME_INTERVAL = 60;
+const MAX_FRAME_DIMENSION = 480;
+const MAX_FRAMERATE = 30;
+
+// Debug logging hops the process boundary via IPC on every call, so it must
+// stay off in normal use. Flip to true only when diagnosing.
+const DEBUG = false;
 
 export class ZenSidebarPiPChild extends JSWindowActorChild {
   _debug(...args) {
+    if (!DEBUG) return;
     try {
       this.sendAsyncMessage("ZenPiP:Debug", { args: args.map(a => {
         try { return typeof a === "object" ? JSON.stringify(a) : String(a); }
         catch (_) { return String(a); }
       }) });
     } catch (_) {}
+  }
+
+  // Longest-edge-capped, even-numbered target dimensions.
+  _encodeSize(w, h) {
+    const scale = Math.min(1, MAX_FRAME_DIMENSION / Math.max(w, h));
+    let tw = Math.max(2, Math.round(w * scale));
+    let th = Math.max(2, Math.round(h * scale));
+    tw -= tw % 2;
+    th -= th % 2;
+    return { tw, th };
   }
 
   handleEvent(event) {
@@ -42,7 +47,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
     if (event.type === "volumechange") {
       if (this._isAudible(target)) {
-        if (!this._encoder && !target.paused && !target.ended) {
+        if (!this._video && !target.paused && !target.ended) {
           this._tryStart(target);
         }
       } else if (target === this._video) {
@@ -62,29 +67,13 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _tryStart(target) {
-    this._debug("[Zenslop/content] tryStart readyState=", target.readyState, "vw=", target.videoWidth, "audible=", this._isAudible(target), "encoderExists=", !!this._encoder);
-    if (this._encoder) return;
+    this._debug("[Zenslop/content] tryStart readyState=", target.readyState, "vw=", target.videoWidth, "audible=", this._isAudible(target), "hasVideo=", !!this._video);
+    if (this._video) return;
     if (target.readyState < 2 || target.videoWidth === 0) return;
     if (!this._isAudible(target)) return;
 
-    let stream;
-    try {
-      if (typeof target.captureStream === "function") {
-        stream = target.captureStream();
-      } else if (typeof target.mozCaptureStream === "function") {
-        stream = target.mozCaptureStream();
-      }
-    } catch (e) {
-      this._debug("[Zenslop/content] captureStream threw:", e?.name, e?.message);
-      return;
-    }
-    const videoTracks = stream?.getVideoTracks?.() || [];
-    this._debug("[Zenslop/content] stream tracks=", videoTracks.length);
-    if (videoTracks.length === 0) return;
-
-    this._stream = stream;
     this._attachVideoListeners(target);
-    this._startEncoder(target);
+    this._startMirror(target);
   }
 
   _attachVideoListeners(video) {
@@ -101,121 +90,52 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
   }
 
-  _startEncoder(video) {
+  _startMirror(video) {
     const win = this.contentWindow;
-    const hasVF = typeof win.VideoFrame === "function";
-    const hasEnc = typeof win.VideoEncoder === "function";
-    if (!hasVF || !hasEnc) {
-      this._debug("[Zenslop/content] WebCodecs unavailable", "hasVF=", hasVF, "hasEnc=", hasEnc);
-      this._stopAndNotify("webcodecs:unavailable");
-      return;
-    }
-
-    const width = video.videoWidth;
-    const height = video.videoHeight;
-    let configSent = false;
-    this._epoch = (this._epoch || 0) + 1;
-    const epoch = this._epoch;
-
-    let outputCount = 0;
-    let encoder;
-    try {
-      encoder = new win.VideoEncoder({
-      output: (chunk, metadata) => {
-        if (outputCount < 3) this._debug("[Zenslop/content] encoder output", outputCount, "type=", chunk.type, "bytes=", chunk.byteLength, "hasConfig=", !!metadata?.decoderConfig);
-        outputCount++;
-        if (this._epoch !== epoch) return;
-        const buf = new ArrayBuffer(chunk.byteLength);
-        chunk.copyTo(buf);
-        const payload = {
-          data: buf,
-          timestamp: chunk.timestamp,
-          duration: chunk.duration,
-          type: chunk.type,
-        };
-        if (!configSent && metadata?.decoderConfig) {
-          const dc = metadata.decoderConfig;
-          payload.config = {
-            codec: dc.codec,
-            codedWidth: dc.codedWidth,
-            codedHeight: dc.codedHeight,
-          };
-          if (dc.description) {
-            const descBuf = new ArrayBuffer(dc.description.byteLength);
-            new Uint8Array(descBuf).set(new Uint8Array(dc.description));
-            payload.config.description = descBuf;
-          }
-          configSent = true;
-        }
-        try {
-          this.sendAsyncMessage("ZenPiP:Frame", payload);
-        } catch (_) {}
-      },
-      error: (e) => {
-        this._debug("[Zenslop/content] encoder error:", e?.message || String(e));
-        this._stopAndNotify("encoder:error");
-      },
-    });
-    } catch (e) {
-      this._debug("[Zenslop/content] VideoEncoder ctor threw:", e?.name, e?.message);
-      this._stopAndNotify("encoder:construct");
-      return;
-    }
+    const srcWidth = video.videoWidth;
+    const srcHeight = video.videoHeight;
+    const { tw, th } = this._encodeSize(srcWidth, srcHeight);
 
     try {
-      encoder.configure({
-        codec: CODEC,
-        width,
-        height,
-        bitrate: MAX_BITRATE_BPS,
-        framerate: MAX_FRAMERATE,
-        latencyMode: "realtime",
-      });
+      this._scaleCanvas = new win.OffscreenCanvas(tw, th);
+      this._scaleCtx = this._scaleCanvas.getContext("2d", { alpha: false });
     } catch (e) {
-      this._debug("[Zenslop/content] encoder.configure threw:", e?.name, e?.message);
-      this._stopAndNotify("encoder:configure");
+      this._debug("[Zenslop/content] OffscreenCanvas creation failed:", e);
+      this._stopAndNotify("canvas:construct");
       return;
     }
-    this._encoder = encoder;
-    this._frameCount = 0;
-    this._startTime = this.contentWindow.performance.now();
+
     this._video = video;
-    this._debug("[Zenslop/content] encoder ready", width, "x", height);
-    this._captureAndEncode();
+    this._startTime = win.performance.now();
+    this._captureFrame();
   }
 
-  _captureAndEncode() {
-    const encoder = this._encoder;
+  _captureFrame() {
     const video = this._video;
-    const win = this.contentWindow;
-    if (!encoder || !video || !win) return;
-    if (encoder.state !== "configured") return;
-    if (encoder.encodeQueueSize > 2) return;
+    const ctx = this._scaleCtx;
+    const canvas = this._scaleCanvas;
+    if (!video || !ctx || !canvas) return;
     if (!(video.videoWidth > 0) || video.readyState < 2) return;
 
-    const frameCount = this._frameCount;
-    const ts = Math.round((this.contentWindow.performance.now() - this._startTime) * 1000);
-    let frame;
+    const tw = canvas.width;
+    const th = canvas.height;
+
     try {
-      frame = new win.VideoFrame(video, { timestamp: ts });
+      ctx.drawImage(video, 0, 0, tw, th);
+      const img = ctx.getImageData(0, 0, tw, th);
+      this.sendAsyncMessage("ZenPiP:Frame", {
+        buf: img.data.buffer,
+        width: tw,
+        height: th,
+      });
     } catch (e) {
-      this._debug("[Zenslop/content] VideoFrame ctor threw:", String(e), e?.name, e?.message);
-      this._stopAndNotify("videoframe:construct");
-      return;
+      this._debug("[Zenslop/content] _captureFrame threw:", String(e), e?.name, e?.message);
     }
-    if (frameCount < 3) this._debug("[Zenslop/content] tick frame", frameCount, "fmt=", frame?.format);
-    try {
-      encoder.encode(frame, { keyFrame: frameCount % KEYFRAME_INTERVAL === 0 });
-    } catch (e) {
-      this._debug("[Zenslop/content] encode threw:", String(e), e?.name, e?.message);
-    }
-    try { frame.close(); } catch (_) {}
-    this._frameCount = frameCount + 1;
   }
 
   _stopAndNotify(reason) {
-    this._debug("[Zenslop/content] stopAndNotify reason=", reason, "hadEnc=", !!this._encoder, "hadVideo=", !!this._video);
-    if (!this._encoder && !this._video) return;
+    this._debug("[Zenslop/content] stopAndNotify reason=", reason, "hadVideo=", !!this._video);
+    if (!this._video) return;
     this._teardown();
     try {
       this.sendAsyncMessage("ZenPiP:VideoStopped", { reason });
@@ -223,24 +143,27 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _teardown() {
-    this._epoch = (this._epoch || 0) + 1;
-    if (this._encoder) {
-      try { this._encoder.close(); } catch (_) {}
-      this._encoder = null;
-    }
-    if (this._stream) {
+    if (this._video && this._videoListeners) {
       try {
-        for (const t of this._stream.getTracks()) t.stop();
-      } catch (e) {}
-      this._stream = null;
+        this._video.removeEventListener("ended", this._videoListeners.onEnd);
+        this._video.removeEventListener("emptied", this._videoListeners.onEnd);
+      } catch (_) {}
+    }
+    if (this._pageHideBound) {
+      try {
+        this.contentWindow?.removeEventListener("pagehide", this._pageHideBound);
+      } catch (_) {}
+      this._pageHideBound = null;
     }
     this._video = null;
     this._videoListeners = null;
+    this._scaleCanvas = null;
+    this._scaleCtx = null;
   }
 
   async receiveMessage(msg) {
     if (msg.name === "ZenPiP:Tick") {
-      this._captureAndEncode();
+      this._captureFrame();
       return;
     }
     if (msg.name === "ZenPiP:Stop") {

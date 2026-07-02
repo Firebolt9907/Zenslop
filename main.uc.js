@@ -60,7 +60,7 @@
       display: none;
       border-radius: var(--zen-border-radius);
       overflow: hidden;
-      contain: size layout;
+      contain: strict;
       z-index: 10;
       pointer-events: none;
       transform-origin: 50% 100%;
@@ -128,23 +128,33 @@
   // arrowscrollbox doesn't reach the shadow-DOM scrollbox.
   let lastTabPad = -1;
   let paddedTab = null;
+  let tabsContainer = null;
+  function getTabsContainer() {
+    if (tabsContainer && tabsContainer.isConnected) return tabsContainer;
+    tabsContainer = document.querySelector("#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs");
+    return tabsContainer;
+  }
   function findBottomMostTab() {
-    const tabs = document.querySelectorAll(".tabbrowser-tab");
-    let best = null,
-      bestBottom = -Infinity;
-    for (const t of tabs) {
-      if (t.hidden) continue;
-      const r = t.getBoundingClientRect();
-      if (r.width === 0 || r.height === 0) continue;
-      if (r.bottom > bestBottom) {
-        bestBottom = r.bottom;
-        best = t;
+    const container = getTabsContainer();
+    const tabs = container ? container.querySelectorAll(".tabbrowser-tab") : document.querySelectorAll(".tabbrowser-tab");
+    for (let i = tabs.length - 1; i >= 0; i--) {
+      const t = tabs[i];
+      if (t.hidden || t.style.display === "none" || t.getAttribute("collapsed") === "true") {
+        continue;
       }
+      if (t.offsetWidth === 0 || t.offsetHeight === 0) {
+        continue;
+      }
+      return t;
     }
-    return best;
+    return null;
   }
   function clearPaddedTab() {
-    if (paddedTab && paddedTab.isConnected) paddedTab.style.marginBottom = "";
+    if (paddedTab && paddedTab.isConnected) {
+      if (paddedTab.style.marginBottom !== "") {
+        paddedTab.style.marginBottom = "";
+      }
+    }
     paddedTab = null;
   }
   function setTabListPadding(px) {
@@ -152,8 +162,6 @@
     if (px === lastTabPad && target === paddedTab) return;
     lastTabPad = px;
 
-    // Also pad every known candidate container — cheap and may help in
-    // browser variants where the host padding actually works.
     const value = px > 0 ? px + "px" : "";
     for (const sel of [
       "#tabbrowser-arrowscrollbox",
@@ -161,12 +169,16 @@
       "#tabbrowser-tabs",
     ]) {
       const el = document.querySelector(sel);
-      if (el) el.style.paddingBottom = value;
+      if (el && el.style.paddingBottom !== value) {
+        el.style.paddingBottom = value;
+      }
     }
 
     if (target !== paddedTab) clearPaddedTab();
     if (target) {
-      target.style.marginBottom = value;
+      if (target.style.marginBottom !== value) {
+        target.style.marginBottom = value;
+      }
       paddedTab = target;
     }
   }
@@ -174,7 +186,7 @@
   function getMediaTopEdge(walkDescendants) {
     const baseRect = musicPlayerUI.getBoundingClientRect();
     let top = baseRect.top;
-    if (walkDescendants) {
+    if (walkDescendants && hoverActive) {
       const kids = musicPlayerUI.querySelectorAll("*");
       for (let i = 0; i < kids.length; i++) {
         const r = kids[i].getBoundingClientRect();
@@ -375,8 +387,12 @@
   function parkNativePipButton(btn) {
     if (!btn || btn === toggleBtn) return;
     nativePipBtn = btn;
-    btn.style.display = "none";
-    btn.setAttribute("aria-hidden", "true");
+    if (btn.style.display !== "none") {
+      btn.style.display = "none";
+    }
+    if (btn.getAttribute("aria-hidden") !== "true") {
+      btn.setAttribute("aria-hidden", "true");
+    }
   }
 
   function buildToggle(template) {
@@ -404,7 +420,11 @@
 
   function placeToggle() {
     if (toggleBtn && toggleBtn.isConnected) {
-      parkNativePipButton(nativePipBtn);
+      if (!nativePipBtn || !nativePipBtn.isConnected) {
+        parkNativePipButton(findExistingPipButton());
+      } else {
+        parkNativePipButton(nativePipBtn);
+      }
       return true;
     }
     const existing = findExistingPipButton();
@@ -486,9 +506,14 @@
 
   // Public controller surface invoked by the parent JSWindowActor.
   window.ZenPiPController = {
-    drawFrame(frame) {
+    getActiveBC() {
+      return sourceBC;
+    },
+    drawFrame({ buf, width, height }) {
       try {
-        canvasCtx.drawImage(frame, 0, 0, canvasEl.width, canvasEl.height);
+        setSourceDimensions(width, height);
+        const img = new ImageData(new Uint8ClampedArray(buf), width, height);
+        canvasCtx.putImageData(img, 0, 0);
       } catch (_) {}
     },
     showVideo(width, height, browsingContext) {
