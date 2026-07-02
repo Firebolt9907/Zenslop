@@ -529,22 +529,11 @@
     getActiveBC() {
       return sourceBC;
     },
-    drawFrame({ buf, blob, width, height }) {
+    drawFrame({ buf, width, height }) {
       try {
         setSourceDimensions(width, height);
-        if (blob) {
-          createImageBitmap(blob)
-            .then((bitmap) => {
-              if (isStreaming) {
-                canvasCtx.drawImage(bitmap, 0, 0, canvasEl.width, canvasEl.height);
-              }
-              bitmap.close();
-            })
-            .catch(() => {});
-        } else if (buf) {
-          const img = new ImageData(new Uint8ClampedArray(buf), width, height);
-          canvasCtx.putImageData(img, 0, 0);
-        }
+        const img = new ImageData(new Uint8ClampedArray(buf), width, height);
+        canvasCtx.putImageData(img, 0, 0);
       } catch (e) {
         err("drawFrame error:", e?.name, e?.message);
       }
