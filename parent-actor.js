@@ -1,15 +1,5 @@
-// Chrome-process side. Receives downscaled raw RGBA frames from the content actor
-// and paints them directly onto the sidebar canvas via ZenPiPController.drawFrame().
-//
-// Frame extraction is driven by a chrome-process setInterval that ticks the
-// content actor at TICK_INTERVAL_MS — rVFC on the content side is throttled
-// to zero in background tabs, which would otherwise stall the mirror whenever
-// the user navigates away from the source tab.
+const TICK_INTERVAL_MS = 33;
 
-const TICK_INTERVAL_MS = 33; // ~30 fps
-
-// Flip to true only when diagnosing. Logging on the hot path (every frame, at
-// 30 fps) is a serious performance drain, so it must stay off in normal use.
 const DEBUG = false;
 const dlog = DEBUG ? (...a) => console.log(...a) : () => {};
 
@@ -24,38 +14,68 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     }
 
     const win = this.browsingContext.topChromeWindow;
-    if (!win) return;
+    if (!win) {
+      console.error("[Zenslop/parent] No chrome window available");
+      return;
+    }
 
     switch (msg.name) {
+      case "ZenPiP:MirrorStarted": {
+        console.log("[Zenslop/parent] MirrorStarted from tab", this.browsingContext.id, msg.data.width, "x", msg.data.height);
+        const controller = win.ZenPiPController;
+        if (controller) {
+          controller.registerSource(this.browsingContext.id, {
+            startTick: (w) => { this._startTicking(w); },
+            stopTick: () => { this._stopTicking(); },
+            win,
+          });
+          controller.offerVideo(msg.data.width, msg.data.height, this.browsingContext);
+        }
+        break;
+      }
+
       case "ZenPiP:Frame": {
         const controller = win.ZenPiPController;
         if (!controller) return;
 
         const activeBC = typeof controller.getActiveBC === "function" ? controller.getActiveBC() : null;
-        if (this._tickInterval) {
-          if (activeBC && activeBC.id !== this.browsingContext.id) {
-            this._handleStop();
-            return;
-          }
-        } else {
+        if (!activeBC || activeBC.id !== this.browsingContext.id) {
+          return;
+        }
+
+        if (!this._tickInterval) {
           this._startTicking(win);
-          try {
-            controller.showVideo(msg.data.width, msg.data.height, this.browsingContext);
-          } catch (e) {
-            dlog("[Zenslop/parent] showVideo threw:", e?.name, e?.message || e);
-          }
-          this._win = win;
         }
 
         try {
           controller.drawFrame(msg.data);
         } catch (e) {
-          dlog("[Zenslop/parent] drawFrame threw:", e?.name, e?.message || e);
+          console.error("[Zenslop/parent] drawFrame error:", e?.name, e?.message);
         }
         break;
       }
+
+      case "ZenPiP:SourceVisibility": {
+        const controller = win.ZenPiPController;
+        if (!controller) break;
+        const activeBC = typeof controller.getActiveBC === "function" ? controller.getActiveBC() : null;
+        if (activeBC && activeBC.id === this.browsingContext.id) {
+          controller.setSourceTabActive(!msg.data.hidden);
+        }
+        break;
+      }
+
       case "ZenPiP:VideoStopped": {
-        this._handleStop();
+        console.log("[Zenslop/parent] VideoStopped reason:", msg.data?.reason);
+        const controller = win.ZenPiPController;
+        if (controller) {
+          controller.unregisterSource(this.browsingContext.id);
+          controller.notifySourceStopped(this.browsingContext);
+        }
+        this._stopTicking();
+        try {
+          this.sendAsyncMessage("ZenPiP:Stop", {});
+        } catch (_) {}
         break;
       }
     }
@@ -63,17 +83,19 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
 
   _startTicking(win) {
     this._stopTicking();
-    dlog("[Zenslop/parent] starting tick interval");
     this._timerWindow = win;
     this._tickInterval = win.setInterval(() => {
       try {
         let quality = "480";
         try {
-          quality = win.Services.prefs.getStringPref("mod.zenslop.quality", "480");
+          quality = Services.prefs.getStringPref("mod.zenslop.quality", "480");
         } catch (_) {}
         this.sendAsyncMessage("ZenPiP:Tick", { quality });
-      } catch (_) {}
+      } catch (e) {
+        console.error("[Zenslop/parent] Tick error:", e?.name, e?.message);
+      }
     }, TICK_INTERVAL_MS);
+    dlog("[Zenslop/parent] Ticking started");
   }
 
   _stopTicking() {
@@ -87,22 +109,15 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     }
   }
 
-  _handleStop() {
+  didDestroy() {
     this._stopTicking();
     try {
       this.sendAsyncMessage("ZenPiP:Stop", {});
     } catch (_) {}
-    const win = this._win || this.browsingContext?.topChromeWindow;
+    const win = this.browsingContext?.topChromeWindow;
     if (win && win.ZenPiPController) {
-      const activeBC = typeof win.ZenPiPController.getActiveBC === "function" ? win.ZenPiPController.getActiveBC() : null;
-      if (!activeBC || activeBC.id === this.browsingContext.id) {
-        win.ZenPiPController.hideVideo();
-      }
+      win.ZenPiPController.unregisterSource(this.browsingContext.id);
+      win.ZenPiPController.notifySourceStopped(this.browsingContext);
     }
-    this._win = null;
-  }
-
-  didDestroy() {
-    this._handleStop();
   }
 }

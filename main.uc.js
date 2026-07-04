@@ -25,6 +25,13 @@
     ANIM_MS: 220,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
+    // A downward move of the player's top edge larger than this (px) is only
+    // committed after the lower edge holds stable for DOWN_HOLD_MS. YouTube's
+    // controls make the measured edge oscillate for a few seconds after a
+    // fast-forward into buffered content while hovered; this asymmetric hold
+    // lets the PiP rise instantly but resists transient drops.
+    TOP_SPIKE_MAX: 32,
+    DOWN_HOLD_MS: 400,
     MAX_HEIGHT: 600,
     DEFAULT_ASPECT: 16 / 9,
     PIP_OPEN_DEBOUNCE_MS: 1500,
@@ -51,7 +58,6 @@
     return;
   }
 
-  // Inject a single stylesheet rather than inlining cssText on every node.
   const styleEl = document.createElement("style");
   styleEl.textContent = `
     #zen-sidebar-pip-container {
@@ -108,7 +114,6 @@
   pipContainer.appendChild(canvasEl);
   document.documentElement.appendChild(pipContainer);
 
-  // Position state
   let lastTop = -1,
     lastLeft = -1,
     lastWidth = -1;
@@ -121,6 +126,8 @@
   let hoverActive = false;
   let lastElevatedTop = null;
   let lastElevatedAt = 0;
+  let lastCommittedMediaTop = null;
+  let pendingDownAt = 0;
   let animating = false;
   let animateOutTimer = null;
   let videoAspect = CONFIG.DEFAULT_ASPECT;
@@ -137,11 +144,6 @@
     }
   }
 
-  // Pad the tab list so the last tabs can scroll above the floating video.
-  // Strategy: apply margin-bottom directly to the bottom-most visible tab.
-  // This always extends the scrollable content regardless of which ancestor
-  // is the actual scroll container — host-level padding on Zen's
-  // arrowscrollbox doesn't reach the shadow-DOM scrollbox.
   let lastTabPad = -1;
   let paddedTab = null;
   let tabsContainer = null;
@@ -205,8 +207,18 @@
     if (walkDescendants && (hoverActive || performance.now() < activeUntil)) {
       const kids = musicPlayerUI.querySelectorAll("*");
       for (let i = 0; i < kids.length; i++) {
-        const r = kids[i].getBoundingClientRect();
-        if (r.width !== 0 && r.height !== 0 && r.top < top) top = r.top;
+        const kid = kids[i];
+        const r = kid.getBoundingClientRect();
+        if (r.width !== 0 && r.height !== 0 && r.top < top) {
+          const style = window.getComputedStyle(kid);
+          if (style.position === "absolute" || style.position === "fixed") {
+            continue;
+          }
+          if (style.visibility === "hidden" || style.display === "none" || style.opacity === "0") {
+            continue;
+          }
+          top = r.top;
+        }
       }
     }
     return {
@@ -240,7 +252,7 @@
     if (!isStreaming) return;
 
     const { visible, opacity } = getMediaPlayerVisibility();
-    const effectivelyVisible = visible && !userHidden;
+    const effectivelyVisible = visible && !userHidden && !sourceTabActive;
     if (effectivelyVisible !== lastVisible) {
       pipContainer.style.visibility = effectivelyVisible ? "visible" : "hidden";
       lastVisible = effectivelyVisible;
@@ -261,8 +273,6 @@
         width: playerWidth,
       } = getMediaTopEdge(true);
       if (playerWidth !== 0) {
-        // Hold an elevated (popup-extended) top through brief glitch frames
-        // where the descendant walk doesn't surface it.
         const now = performance.now();
         let mediaTop = mediaTopRaw;
         if (mediaTopRaw < baseTop - 1) {
@@ -278,9 +288,33 @@
           lastElevatedTop = null;
         }
 
-        // Fit the video into a box capped by player width, MAX_HEIGHT, and the
-        // available space above the controls so vertical videos expand upward
-        // rather than overflowing into the space selector / playback controls.
+        // Asymmetric hold for the player's top edge: the PiP may rise
+        // immediately (to stay above the controls), but a downward move is only
+        // committed once the lower edge has held stable for DOWN_HOLD_MS. While
+        // holding we substitute the last committed (higher) edge rather than
+        // skipping the frame, so the position still updates (left/width/aspect)
+        // and always has a value — but doesn't drop for the transient control
+        // oscillation YouTube emits for a few seconds after a fast-forward or a
+        // pause/play while the controls are hovered. The reference persists
+        // across stop/restart (see stopTracking) so pause/play keeps its stable
+        // pre-pause baseline instead of re-seeding mid-oscillation.
+        if (
+          lastCommittedMediaTop !== null &&
+          mediaTop - lastCommittedMediaTop > CONFIG.TOP_SPIKE_MAX
+        ) {
+          if (pendingDownAt === 0) pendingDownAt = now;
+          if (now - pendingDownAt < CONFIG.DOWN_HOLD_MS) {
+            mediaTop = lastCommittedMediaTop;
+            schedule();
+          } else {
+            pendingDownAt = 0;
+            lastCommittedMediaTop = mediaTop;
+          }
+        } else {
+          pendingDownAt = 0;
+          lastCommittedMediaTop = mediaTop;
+        }
+
         const availableHeight = mediaTop - CONFIG.GAP;
         let width = playerWidth;
         let height = width / videoAspect;
@@ -307,8 +341,6 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        // Cap padding at the 16:9 equivalent height so portrait videos don't
-        // overflow the XUL scroll container and push the controls downward.
         const padHeight = Math.min(height, playerWidth / CONFIG.DEFAULT_ASPECT);
         setTabListPadding(userHidden ? 0 : Math.ceil(padHeight + CONFIG.GAP * 2));
       }
@@ -341,10 +373,16 @@
     hoverActive = false;
     lastElevatedTop = null;
     lastElevatedAt = 0;
+    // NB: lastCommittedMediaTop is intentionally NOT reset here. The sidebar
+    // player's top edge is stable across a pause/play, so keeping the reference
+    // lets the asymmetric hold resist the transient control oscillation on
+    // restart instead of re-seeding mid-glitch. (pendingDownAt is reset — a
+    // fresh timer per stream is fine and self-heals on the next up-frame.)
+    pendingDownAt = 0;
     setTabListPadding(0);
+    sourceTabActive = false;
   }
 
-  // Event-driven triggers — far cheaper than polling every frame.
   musicPlayerUI.addEventListener("mouseenter", () => {
     hoverActive = true;
     bump();
@@ -374,7 +412,6 @@
   });
   window.addEventListener("resize", bump);
 
-  // Toggle button (eye / eye-off) injected next to the existing PiP button.
   const EYE_SVG =
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
     "<path d='M12 5c-7 0-11 7-11 7s4 7 11 7 11-7 11-7-4-7-11-7zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8z'/></svg>";
@@ -472,9 +509,23 @@
     subtree: true,
   });
 
-  // BrowsingContext bookkeeping for click-to-focus origin tab.
   let sourceBC = null;
+  let sourceTabActive = false;
   let lastPipOpenAt = 0;
+  const availableSources = new Map();
+  const actorRegistry = new Map();
+
+  function isTabPlaying(bc) {
+    if (!bc) return false;
+    try {
+      for (const tab of gBrowser.tabs) {
+        if (tab.linkedBrowser?.browsingContext?.id === bc.id) {
+          return tab.hasAttribute("soundplaying");
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
 
   function getActiveActor() {
     if (!sourceBC) return null;
@@ -484,8 +535,6 @@
     );
   }
 
-  // Catch the next PiP window that opens so we can clean up the observer
-  // once it's served its purpose.
   function awaitNextPipWindow() {
     let timeoutId = null;
     const unregister = () =>
@@ -518,7 +567,6 @@
     lastPipOpenAt = performance.now();
   });
 
-  // Public controller surface invoked by the parent JSWindowActor.
   window.ZenPiPController = {
     getActiveBC() {
       return sourceBC;
@@ -528,9 +576,83 @@
         setSourceDimensions(width, height);
         const img = new ImageData(new Uint8ClampedArray(buf), width, height);
         canvasCtx.putImageData(img, 0, 0);
-      } catch (_) {}
+      } catch (e) {
+        err("drawFrame error:", e?.name, e?.message);
+      }
     },
-    showVideo(width, height, browsingContext) {
+    setSourceTabActive(active) {
+      if (sourceTabActive === active) return;
+      sourceTabActive = active;
+      if (isStreaming) bump();
+    },
+    registerSource(id, callbacks) {
+      if (!actorRegistry.has(id)) {
+        actorRegistry.set(id, callbacks);
+      }
+    },
+    unregisterSource(id) {
+      actorRegistry.delete(id);
+    },
+    offerVideo(width, height, browsingContext) {
+      const id = browsingContext.id;
+      if (availableSources.has(id)) return;
+      availableSources.set(id, { bc: browsingContext, width, height });
+
+      // Only defer when a *different* tab is already mirroring. A re-offer from
+      // the same tab (e.g. YouTube swapping an ad for the real video on the same
+      // <video>, which fires emptied -> playing) must re-activate immediately
+      // instead of queuing behind its own in-flight hide animation.
+      if (sourceBC && sourceBC.id !== id && isTabPlaying(sourceBC)) {
+        log("source queued (existing still playing):", id, "active:", sourceBC.id);
+        return;
+      }
+
+      this._activateSource(width, height, browsingContext);
+    },
+    notifySourceStopped(bc) {
+      availableSources.delete(bc.id);
+
+      if (sourceBC && sourceBC.id === bc.id) {
+        if (availableSources.size > 0) {
+          this._activateSourceAfterHide();
+        } else {
+          this.hideVideo();
+        }
+      }
+    },
+    _activateSourceAfterHide() {
+      if (animateOutTimer) return;
+      const s = pipContainer.style;
+      animating = true;
+      s.transition = "none";
+      s.opacity = userHidden ? "0" : "1";
+      s.transform = "scale(1) translateY(0)";
+      void pipContainer.getBoundingClientRect();
+
+      requestAnimationFrame(() => {
+        s.transition = ANIM_TRANSITION;
+        requestAnimationFrame(() => {
+          s.opacity = "0";
+          s.transform = "scale(0.9) translateY(8px)";
+        });
+      });
+
+      animateOutTimer = setTimeout(() => {
+        animateOutTimer = null;
+        animating = false;
+        sourceBC = null;
+        isStreaming = false;
+        stopTracking();
+
+        if (availableSources.size > 0) {
+          const next = availableSources.values().next().value;
+          this._activateSource(next.width, next.height, next.bc);
+        }
+      }, CONFIG.ANIM_MS + 60);
+    },
+    _activateSource(width, height, browsingContext) {
+      availableSources.delete(browsingContext.id);
+      log("showVideo", width, "x", height, "tab", browsingContext?.id);
       setSourceDimensions(width, height);
       const previousSourceBC = sourceBC;
       const nextSourceBC = browsingContext || null;
@@ -538,53 +660,74 @@
         previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
       sourceBC = nextSourceBC;
 
+      if (sourceBC) {
+        try {
+          sourceTabActive = gBrowser?.selectedBrowser?.browsingContext?.id === sourceBC.id;
+        } catch (_) {
+          sourceTabActive = false;
+        }
+      }
+
       if (animateOutTimer) {
+        // We're pre-empting an in-flight hide to re-activate; we're no longer
+        // animating out, so clear the flag or it stays stuck true.
         clearTimeout(animateOutTimer);
         animateOutTimer = null;
+        animating = false;
       }
 
       const wasStreaming = isStreaming;
       isStreaming = true;
       startTracking();
 
+      // Always (re)start the frame tick. The parent actor stops ticking on
+      // VideoStopped, so a stop+restart cycle — e.g. YouTube pausing to
+      // rebuffer during a fast-forward — leaves the tick dead. The shortcut
+      // branch below used to return without restarting it, freezing the mirror
+      // on its last (often black) frame with no recovery.
+      const info = actorRegistry.get(browsingContext.id);
+      if (info) info.startTick(info.win || window);
+
       if (wasStreaming && !sourceChanged) {
         const s = pipContainer.style;
-        s.opacity = userHidden ? "0" : "1";
-        s.visibility = userHidden ? "hidden" : "visible";
+        s.opacity = userHidden || sourceTabActive ? "0" : "1";
+        s.visibility = userHidden || sourceTabActive ? "hidden" : "visible";
         s.transform = "";
         return;
       }
 
       const s = pipContainer.style;
       s.display = "block";
-      s.visibility = userHidden ? "hidden" : "visible";
+      s.visibility = userHidden || sourceTabActive ? "hidden" : "visible";
 
-      animating = true;
-      // Commit the start state with NO transition. Forcing layout via
-      // getBoundingClientRect alone isn't enough — the browser may coalesce
-      // a same-task `transition: none` -> `transition: ANIM_TRANSITION` swap,
-      // and the opacity:0 start is never observed under no-transition. Using
-      // a double rAF ensures the start frame is painted before we re-enable
-      // the transition and target the end state.
-      s.transition = "none";
-      s.opacity = "0";
-      s.transform = "scale(0.9) translateY(8px)";
-      void pipContainer.getBoundingClientRect();
-
-      requestAnimationFrame(() => {
-        s.transition = ANIM_TRANSITION;
-        requestAnimationFrame(() => {
-          s.opacity = userHidden ? "0" : "1";
-          s.transform = "scale(1) translateY(0)";
-        });
-      });
-      setTimeout(() => {
+      if (sourceTabActive) {
+        isStreaming = true;
         animating = false;
-        lastOpacity = NaN;
-      }, CONFIG.ANIM_MS + 60);
+        startTracking();
+      } else {
+        animating = true;
+        s.transition = "none";
+        s.opacity = "0";
+        s.transform = "scale(0.9) translateY(8px)";
+        void pipContainer.getBoundingClientRect();
+
+        requestAnimationFrame(() => {
+          s.transition = ANIM_TRANSITION;
+          requestAnimationFrame(() => {
+            s.opacity = userHidden ? "0" : "1";
+            s.transform = "scale(1) translateY(0)";
+          });
+        });
+        setTimeout(() => {
+          animating = false;
+          lastOpacity = NaN;
+          s.transition = "";
+        }, CONFIG.ANIM_MS + 60);
+      }
     },
 
     hideVideo() {
+      log("hideVideo");
       if (!isStreaming && !animating) return;
       if (animateOutTimer) {
         clearTimeout(animateOutTimer);
@@ -593,9 +736,6 @@
 
       animating = true;
       const s = pipContainer.style;
-      // Pin the current visual state explicitly under no-transition, then
-      // flip transitions on in a rAF so the change to opacity:0 actually
-      // animates from a known starting point.
       s.transition = "none";
       s.opacity = userHidden ? "0" : "1";
       s.transform = "scale(1) translateY(0)";
@@ -615,17 +755,23 @@
         safe(() => canvasCtx.clearRect(0, 0, canvasEl.width, canvasEl.height));
         sourceBC = null;
         s.display = "none";
-        s.transition = "none";
+        s.transition = "";
         s.transform = "";
         isStreaming = false;
         stopTracking();
         lastOpacity = NaN;
         lastVisible = null;
+
+        // A different source may have been queued while this hide was running;
+        // drain it so it isn't stranded until the next pause/play.
+        if (availableSources.size > 0) {
+          const next = availableSources.values().next().value;
+          this._activateSource(next.width, next.height, next.bc);
+        }
       }, CONFIG.ANIM_MS + 60);
     },
   };
 
-  // Register the JSWindowActor that bridges the e10s process gap.
   try {
     const profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
     const modDir = profileDir.clone();
