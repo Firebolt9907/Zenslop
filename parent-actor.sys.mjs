@@ -70,6 +70,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
         // it — it's the freshest frame we have.
         try {
           controller.drawFrame(msg.data);
+          controller.setCaption(msg.data?.caption || "");
         } catch (e) {
           console.error("[Zenslop/parent] drawFrame error:", e?.name, e?.message);
         }

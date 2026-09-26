@@ -6,6 +6,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   actorCreated() {
     this._processingActive = false;
     this._lastCaptionText = "";
+    this._captionText = "";
     this._debug(
       "[Zenslop/content] actorCreated",
       this.contentWindow?.location?.href,
@@ -243,6 +244,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       this._captionObserver.observe(nextRoot, {
         childList: true,
         characterData: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "aria-hidden"],
         subtree: true,
       });
     }
@@ -260,13 +263,40 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     });
   }
 
+  _visibleCaptionText(root) {
+    const win = this.contentWindow;
+    if (!win || !root) return "";
+    const pieces = [];
+    const visit = (node) => {
+      if (node.nodeType === 3) {
+        pieces.push(node.nodeValue || "");
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      if (node.getAttribute("aria-hidden") === "true") return;
+      const style = win.getComputedStyle(node);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse" ||
+        Number.parseFloat(style.opacity) === 0
+      ) {
+        return;
+      }
+      for (const child of node.childNodes) visit(child);
+    };
+    visit(root);
+    return pieces.join("").replace(/\s+/g, " ").trim();
+  }
+
   _syncCaption() {
     if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
-      return;
+      this._captionText = "";
+      return "";
     }
 
     const doc = this.contentWindow?.document;
-    if (!doc) return;
+    if (!doc) return this._captionText;
     const ccButton = doc.querySelector(".ytp-subtitles-button");
     const captionsEnabled =
       !ccButton ||
@@ -278,27 +308,28 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       const parts = [];
       for (const segment of doc.querySelectorAll(".ytp-caption-segment")) {
         const windowEl = segment.closest(".caption-window");
-        const style = this.contentWindow.getComputedStyle(segment);
         const windowStyle = windowEl
           ? this.contentWindow.getComputedStyle(windowEl)
           : null;
         if (
-          style.display === "none" ||
-          style.visibility === "hidden" ||
-          style.opacity === "0" ||
           windowStyle?.display === "none" ||
           windowStyle?.visibility === "hidden" ||
           windowStyle?.opacity === "0"
         ) {
           continue;
         }
-        const value = (segment.textContent || "").replace(/\s+/g, " ").trim();
+        // YouTube sometimes inserts a complete automatic-caption cue and
+        // reveals its descendants word by word. Reading only visible text
+        // keeps those rolling words incremental instead of exposing the full
+        // cue early.
+        const value = this._visibleCaptionText(segment);
         if (value) parts.push(value);
       }
       text = parts.join(" ").replace(/\s+/g, " ").trim();
     }
 
-    this._sendCaption(text);
+    this._captionText = text;
+    return text;
   }
 
   _sendCaption(text) {
@@ -320,6 +351,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._captionRoot = null;
     this._ccButtonObserver = null;
     this._captionSyncQueued = false;
+    this._captionText = "";
     if (clear) this._sendCaption("");
   }
 
@@ -384,6 +416,12 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
 
     try {
+      // Read the caption in the same turn as the video surface and transfer
+      // both in one actor message. Sending DOM mutations independently made a
+      // fresh caption race an older frame while the source tab was throttled.
+      // A frame-paced snapshot also preserves YouTube's incremental ASR word
+      // updates without introducing a second timer.
+      const caption = this._syncCaption();
       // Synchronous downscale + readback, shipped as a transferable RGBA
       // buffer. An ImageBitmap cannot cross the JSActor boundary — Gecko's
       // structured clone restricts it to same-process scope — so a copied
@@ -395,6 +433,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         buf: img.data.buffer,
         width: canvas.width,
         height: canvas.height,
+        caption,
       }, [img.data.buffer]);
     } catch (e) {
       this._debug("[Zenslop/content] _captureFrame threw:", String(e), e?.name, e?.message);

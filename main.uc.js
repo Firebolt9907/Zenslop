@@ -214,19 +214,11 @@
     lastTabPad = px;
 
     const value = px > 0 ? px + "px" : "";
-    for (const sel of [
-      "#tabbrowser-arrowscrollbox",
-      "#zen-tabs-wrapper",
-      "#tabbrowser-tabs",
-    ]) {
-      const el = document.querySelector(sel);
-      if (el && el.style.paddingBottom !== value) {
-        el.style.paddingBottom = value;
-      }
-    }
-
     if (target !== paddedTab) clearPaddedTab();
     if (target) {
+      // One margin inside the scrollable tab list is the spacer. Applying the
+      // same value to each nested tab container compounded the reserved space,
+      // especially for tall or otherwise unusual source aspect ratios.
       if (target.style.marginBottom !== value) {
         target.style.marginBottom = value;
       }
@@ -407,17 +399,14 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        // Reserve exactly the space occupied by the rendered player. Capping
-        // this to a 16:9 height made taller source videos overlap the tab list
-        // even though their visual container was positioned correctly.
-        const padHeight = height;
-        const captionSpace = captionHeight > 0
-          ? captionHeight + CONFIG.GAP
-          : 0;
+        // Measure from the stable media-toolbar edge to the actual rendered
+        // top. This includes the source aspect ratio, caption height, gaps, and
+        // any temporary expansion of the media controls in one value.
+        const reservedHeight = Math.max(0, baseTop - top + CONFIG.GAP);
         setTabListPadding(
           userHidden
             ? 0
-            : Math.ceil(padHeight + captionSpace + CONFIG.GAP * 2),
+            : Math.ceil(reservedHeight),
         );
       }
     } else {
