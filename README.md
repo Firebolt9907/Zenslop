@@ -54,18 +54,19 @@ The mod runs in three pieces that bridge Firefox's e10s process boundary:
 | File | Process | Responsibility |
 | --- | --- | --- |
 | `main.uc.js` | chrome | Injects the floating video container into the sidebar, registers the `JSWindowActor`, and exposes `window.ZenPiPController`. |
-| `content-actor.js` | content | Watches `playing` / `pause` / `volumechange` on `<video>` elements, captures the stream via `captureStream()`, and forwards it through a same-process `RTCPeerConnection`. |
-| `parent-actor.js` | chrome | Receives the WebRTC offer, answers it, and hands the resulting `MediaStream` to `ZenPiPController.showVideo()`. |
+| `content-actor.sys.mjs` | content | Discovers playing videos, mirrors YouTube captions, and captures scaled frames. |
+| `parent-actor.sys.mjs` | chrome | Runs the adaptive frame clock and forwards frames and captions to the sidebar controller. |
 
-### Why WebRTC for a same-browser mirror?
+### Why a window actor?
 
-`captureStream()` produces a `MediaStream` bound to the content process. Chrome-process UI can't consume it directly, and `postMessage` can't ferry live media. A loopback `RTCPeerConnection` between the two actors is the cheapest way to move frames across the process boundary without copying pixels through JS.
+The source video lives in a sandboxed content process, while the sidebar lives
+in the chrome process. A `JSWindowActor` pair bridges that boundary: the parent
+requests a frame, the child scales and reads it, and the parent paints it into
+the sidebar canvas.
 
-The connection is tuned for "this is loopback, stop pretending it's the open internet":
-
-- `minBitrate: 2.5 Mbps`, `priority: "high"`, `networkPriority: "high"` on the sender so the encoder doesn't slow-start.
-- `degradationPreference: "maintain-framerate"` so dropped pixels are preferred over dropped frames.
-- `receiver.playoutDelayHint = 0`, `receiver.jitterBufferTarget = 0` so frames render as they arrive instead of buffering up over the first few seconds.
+Capture is self-clocking, resolution-adaptive, and capped to the rendered
+sidebar size. The default 15 fps mode evenly samples common 30 and 60 fps video
+while substantially reducing cross-process pixel traffic.
 
 
 ---
@@ -103,12 +104,10 @@ const CONFIG = Object.freeze({
 });
 ```
 
-Encoder caps live in `content-actor.js`:
+The base capture cap lives in `content-actor.sys.mjs`:
 
 ```js
-const MAX_BITRATE_BPS = 8_000_000;
-const MIN_BITRATE_BPS = 2_500_000;
-const MAX_FRAMERATE = 60;
+const MAX_FRAME_DIMENSION = 480;
 ```
 
 ---
@@ -116,7 +115,7 @@ const MAX_FRAMERATE = 60;
 ## Compatibility
 
 - Built against **Zen Browser** (Firefox-based, ESR rapid channel).
-- Uses `JSWindowActor`, `RTCPeerConnection`, `HTMLMediaElement.captureStream()`, `RTCRtpReceiver.playoutDelayHint`, `RTCRtpReceiver.jitterBufferTarget`. Older Firefox builds will silently ignore the receiver hints and the encoder `minBitrate`.
+- Uses `JSWindowActor`, `OffscreenCanvas`, and cross-process pixel buffers.
 - Tested with YT and YTM on MacOS, but there shouldn't be anything OS specific
 
 ---

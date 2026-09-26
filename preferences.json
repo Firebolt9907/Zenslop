@@ -3,7 +3,7 @@
     "property": "mod.zenslop.quality",
     "label": "Video Quality",
     "type": "dropdown",
-    "defaultValue": "480",
+    "defaultValue": "360",
     "options": [
       {
         "label": "Compact (240p)",
@@ -20,6 +20,22 @@
       {
         "label": "High (640p)",
         "value": "640"
+      }
+    ]
+  },
+  {
+    "property": "mod.zenslop.framerate",
+    "label": "Preview Frame Rate",
+    "type": "dropdown",
+    "defaultValue": "15",
+    "options": [
+      {
+        "label": "Energy Saver (15 fps)",
+        "value": "15"
+      },
+      {
+        "label": "Smooth (30 fps)",
+        "value": "30"
       }
     ]
   }

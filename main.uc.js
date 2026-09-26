@@ -82,6 +82,26 @@
       object-fit: contain;
       display: block;
     }
+    #zen-sidebar-pip-caption {
+      position: fixed;
+      display: none;
+      box-sizing: border-box;
+      padding: 7px 10px;
+      color: white;
+      background: color-mix(in srgb, black 78%, transparent);
+      border: 1px solid color-mix(in srgb, white 14%, transparent);
+      border-radius: var(--zen-border-radius);
+      box-shadow: 0 3px 12px rgb(0 0 0 / 28%);
+      font: 600 12px/1.35 system-ui, sans-serif;
+      text-align: center;
+      text-wrap: balance;
+      overflow-wrap: anywhere;
+      max-height: calc(4.05em + 14px);
+      overflow: hidden;
+      z-index: 11;
+      pointer-events: none;
+      transition: opacity ${CONFIG.ANIM_MS}ms ease;
+    }
     #zen-sidebar-pip-toggle {
       flex: 0 0 auto;
       max-width: 24px !important;
@@ -114,6 +134,11 @@
   pipContainer.appendChild(canvasEl);
   document.documentElement.appendChild(pipContainer);
 
+  const captionContainer = document.createElement("div");
+  captionContainer.id = "zen-sidebar-pip-caption";
+  captionContainer.setAttribute("aria-live", "off");
+  document.documentElement.appendChild(captionContainer);
+
   let lastTop = -1,
     lastLeft = -1,
     lastWidth = -1;
@@ -131,11 +156,19 @@
   let animating = false;
   let animateOutTimer = null;
   let videoAspect = CONFIG.DEFAULT_ASPECT;
+  let captionText = "";
+  let browserWindowActive = true;
+  let captureMaxDimension = -1;
 
-  function setSourceDimensions(w, h) {
+  function setCanvasDimensions(w, h) {
     if (!(w > 0) || !(h > 0)) return;
     if (canvasEl.width !== w) canvasEl.width = w;
     if (canvasEl.height !== h) canvasEl.height = h;
+  }
+
+  function setSourceDimensions(w, h) {
+    if (!(w > 0) || !(h > 0)) return;
+    setCanvasDimensions(w, h);
     const nextAspect = w / h;
     if (nextAspect !== videoAspect) {
       videoAspect = nextAspect;
@@ -252,15 +285,20 @@
     if (!isStreaming) return;
 
     const { visible, opacity } = getMediaPlayerVisibility();
-    const effectivelyVisible = visible && !userHidden && !sourceTabActive;
+    const effectivelyVisible =
+      visible && !userHidden && !sourceTabActive && browserWindowActive;
     if (effectivelyVisible !== lastVisible) {
       pipContainer.style.visibility = effectivelyVisible ? "visible" : "hidden";
+      captionContainer.style.visibility = effectivelyVisible
+        ? "visible"
+        : "hidden";
       lastVisible = effectivelyVisible;
     }
     if (!animating) {
       const op = userHidden ? 0 : opacity;
       if (op !== lastOpacity) {
         pipContainer.style.opacity = String(op);
+        captionContainer.style.opacity = String(op);
         lastOpacity = op;
       }
     }
@@ -315,17 +353,45 @@
           lastCommittedMediaTop = mediaTop;
         }
 
-        const availableHeight = mediaTop - CONFIG.GAP;
+        let captionHeight = 0;
+        let videoBottom = mediaTop - CONFIG.GAP;
+        if (captionText) {
+          const cs = captionContainer.style;
+          cs.display = "block";
+          cs.width = playerWidth + "px";
+          cs.left = left + "px";
+          captionHeight = Math.ceil(captionContainer.getBoundingClientRect().height);
+          const captionTop = mediaTop - CONFIG.GAP - captionHeight;
+          cs.top = captionTop + "px";
+          videoBottom = captionTop - CONFIG.GAP;
+        } else {
+          captionContainer.style.display = "none";
+        }
+
+        const availableHeight = Math.max(2, videoBottom);
         let width = playerWidth;
         let height = width / videoAspect;
-        const effectiveMaxHeight = Math.min(playerWidth, availableHeight);
+        const effectiveMaxHeight = Math.max(
+          2,
+          Math.min(playerWidth, availableHeight),
+        );
         if (height > effectiveMaxHeight) {
           height = effectiveMaxHeight;
           width = height * videoAspect;
         }
         const adjustedLeft = left + (playerWidth - width) / 2;
 
-        const top = mediaTop - CONFIG.GAP - height;
+        const nextCaptureMaxDimension = Math.max(
+          160,
+          Math.ceil(Math.max(width, height)),
+        );
+        if (nextCaptureMaxDimension !== captureMaxDimension) {
+          captureMaxDimension = nextCaptureMaxDimension;
+          const info = sourceBC ? actorRegistry.get(sourceBC.id) : null;
+          info?.setMaxDimension?.(captureMaxDimension);
+        }
+
+        const top = videoBottom - height;
         if (
           top !== lastTop ||
           adjustedLeft !== lastLeft ||
@@ -341,14 +407,25 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        const padHeight = Math.min(height, playerWidth / CONFIG.DEFAULT_ASPECT);
-        setTabListPadding(userHidden ? 0 : Math.ceil(padHeight + CONFIG.GAP * 2));
+        // Reserve exactly the space occupied by the rendered player. Capping
+        // this to a 16:9 height made taller source videos overlap the tab list
+        // even though their visual container was positioned correctly.
+        const padHeight = height;
+        const captionSpace = captionHeight > 0
+          ? captionHeight + CONFIG.GAP
+          : 0;
+        setTabListPadding(
+          userHidden
+            ? 0
+            : Math.ceil(padHeight + captionSpace + CONFIG.GAP * 2),
+        );
       }
     } else {
+      captionContainer.style.display = "none";
       setTabListPadding(0);
     }
 
-    if (hoverActive || performance.now() < activeUntil) schedule();
+    if (performance.now() < activeUntil) schedule();
   }
 
   function schedule() {
@@ -366,7 +443,9 @@
     lastTop = lastLeft = lastWidth = -1;
     lastVisible = null;
     lastOpacity = NaN;
+    captureMaxDimension = -1;
     bump();
+    _notifyTickState();
   }
   function stopTracking() {
     activeUntil = 0;
@@ -381,6 +460,7 @@
     pendingDownAt = 0;
     setTabListPadding(0);
     sourceTabActive = false;
+    _notifyTickState();
   }
 
   musicPlayerUI.addEventListener("mouseenter", () => {
@@ -411,6 +491,27 @@
     attributeFilter: ["hidden", "style", "class", "open"],
   });
   window.addEventListener("resize", bump);
+
+  function updateBrowserActivity() {
+    const nextActive =
+      document.visibilityState !== "hidden" &&
+      window.windowState !== window.STATE_MINIMIZED &&
+      safe(() => Services.focus.activeWindow === window) !== false;
+    if (nextActive === browserWindowActive) return;
+    browserWindowActive = nextActive;
+    if (!browserWindowActive) {
+      pipContainer.style.visibility = "hidden";
+      captionContainer.style.visibility = "hidden";
+    }
+    if (isStreaming) bump();
+    _notifyTickState();
+  }
+
+  window.addEventListener("activate", updateBrowserActivity);
+  window.addEventListener("deactivate", updateBrowserActivity);
+  window.addEventListener("sizemodechange", updateBrowserActivity);
+  document.addEventListener("visibilitychange", updateBrowserActivity);
+  setTimeout(updateBrowserActivity, 0);
 
   const EYE_SVG =
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='context-fill' fill-opacity='context-fill-opacity'>" +
@@ -463,6 +564,7 @@
       userHidden = !userHidden;
       btn.style.listStyleImage = userHidden ? EYE_OFF_URL : EYE_URL;
       bump();
+      _notifyTickState();
     });
     toggleBtn = btn;
     return btn;
@@ -535,6 +637,21 @@
     );
   }
 
+  function _notifyTickState() {
+    const effectivelyVisible =
+      !userHidden && !sourceTabActive && browserWindowActive;
+    const info = sourceBC ? actorRegistry.get(sourceBC.id) : null;
+    if (!info) return;
+
+    const processingActive = isStreaming && effectivelyVisible;
+    info.setProcessingActive?.(processingActive);
+    if (processingActive) {
+      info.startTick(info.win || window);
+    } else {
+      info.stopTick();
+    }
+  }
+
   function awaitNextPipWindow() {
     let timeoutId = null;
     const unregister = () =>
@@ -573,17 +690,30 @@
     },
     drawFrame({ buf, width, height }) {
       try {
-        setSourceDimensions(width, height);
+        // Adaptive capture resolution is independent from layout. The source
+        // aspect is established by MirrorStarted/offerVideo; using each
+        // downscaled frame here created a resolution -> aspect -> layout
+        // feedback loop because even-number rounding slightly changes ratios.
+        setCanvasDimensions(width, height);
         const img = new ImageData(new Uint8ClampedArray(buf), width, height);
         canvasCtx.putImageData(img, 0, 0);
       } catch (e) {
         err("drawFrame error:", e?.name, e?.message);
       }
     },
+    setCaption(text) {
+      const next = String(text || "").replace(/\s+/g, " ").trim().slice(0, 1000);
+      if (next === captionText) return;
+      captionText = next;
+      captionContainer.textContent = next;
+      lastTop = lastLeft = lastWidth = -1;
+      if (isStreaming) bump();
+    },
     setSourceTabActive(active) {
       if (sourceTabActive === active) return;
       sourceTabActive = active;
       if (isStreaming) bump();
+      _notifyTickState();
     },
     registerSource(id, callbacks) {
       if (!actorRegistry.has(id)) {
@@ -658,6 +788,7 @@
       const nextSourceBC = browsingContext || null;
       const sourceChanged =
         previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
+      if (sourceChanged) this.setCaption("");
       sourceBC = nextSourceBC;
 
       if (sourceBC) {
@@ -679,14 +810,6 @@
       const wasStreaming = isStreaming;
       isStreaming = true;
       startTracking();
-
-      // Always (re)start the frame tick. The parent actor stops ticking on
-      // VideoStopped, so a stop+restart cycle — e.g. YouTube pausing to
-      // rebuffer during a fast-forward — leaves the tick dead. The shortcut
-      // branch below used to return without restarting it, freezing the mirror
-      // on its last (often black) frame with no recovery.
-      const info = actorRegistry.get(browsingContext.id);
-      if (info) info.startTick(info.win || window);
 
       if (wasStreaming && !sourceChanged) {
         const s = pipContainer.style;
@@ -753,6 +876,7 @@
         animateOutTimer = null;
         animating = false;
         safe(() => canvasCtx.clearRect(0, 0, canvasEl.width, canvasEl.height));
+        this.setCaption("");
         sourceBC = null;
         s.display = "none";
         s.transition = "";
@@ -772,6 +896,22 @@
     },
   };
 
+  function instantiateActorForOpenTabs() {
+    try {
+      for (const browser of gBrowser?.browsers || []) {
+        const pending = [browser.browsingContext];
+        while (pending.length) {
+          const bc = pending.pop();
+          if (!bc) continue;
+          safe(() => bc.currentWindowGlobal?.getActor("ZenSidebarPiP"));
+          safe(() => pending.push(...bc.children));
+        }
+      }
+    } catch (e) {
+      warn("Could not initialize actors for open tabs:", e);
+    }
+  }
+
   try {
     const profileDir = Services.dirsvc.get("ProfD", Ci.nsIFile);
     const modDir = profileDir.clone();
@@ -786,22 +926,39 @@
     log("resource mapped to:", modUri.spec, "exists:", modDir.exists());
 
     ChromeUtils.registerWindowActor("ZenSidebarPiP", {
-      parent: { esModuleURI: "resource://zen-sidebar-pip/parent-actor.js" },
+      parent: {
+        esModuleURI: "resource://zen-sidebar-pip/parent-actor.sys.mjs",
+      },
       child: {
-        esModuleURI: "resource://zen-sidebar-pip/content-actor.js",
+        esModuleURI: "resource://zen-sidebar-pip/content-actor.sys.mjs",
         events: {
+          DOMContentLoaded: {},
+          pageshow: {},
+          play: { capture: true, mozSystemGroup: true },
           playing: { capture: true, mozSystemGroup: true },
+          loadedmetadata: { capture: true, mozSystemGroup: true },
+          canplay: { capture: true, mozSystemGroup: true },
           pause: { capture: true, mozSystemGroup: true },
+          ended: { capture: true, mozSystemGroup: true },
+          emptied: { capture: true, mozSystemGroup: true },
           volumechange: { capture: true, mozSystemGroup: true },
         },
       },
       messageManagerGroups: ["browsers"],
       allFrames: true,
+      safeForUntrustedWebProcess: true,
     });
   } catch (e) {
     if (e.name !== "NotSupportedError")
       err("Failed to register JSWindowActor:", e);
   }
+
+  // Actor registration is process-global and lazy. Force an instance for
+  // already-open documents so restored playback is discovered, then retry as
+  // the registration reaches existing content processes.
+  instantiateActorForOpenTabs();
+  setTimeout(instantiateActorForOpenTabs, 500);
+  setTimeout(instantiateActorForOpenTabs, 1500);
 
   log("Zenslop initialized.");
 })();
