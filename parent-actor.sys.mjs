@@ -7,6 +7,7 @@ const FAST_FRAMES_BEFORE_UPGRADE = 30;
 // Keepalive re-tick when a frame never comes back (tab throttled, video not
 // ready, capture threw). Keeps the loop alive at ~2fps instead of dead.
 const SAFETY_TICK_MS = 500;
+const CAPTION_TICK_MS = 50;
 
 const DEBUG = false;
 const dlog = DEBUG ? (...a) => console.log(...a) : () => {};
@@ -70,7 +71,6 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
         // it — it's the freshest frame we have.
         try {
           controller.drawFrame(msg.data);
-          controller.setCaption(msg.data?.caption || "");
         } catch (e) {
           console.error("[Zenslop/parent] drawFrame error:", e?.name, e?.message);
         }
@@ -126,6 +126,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._lastTickSentAt = 0;
     this._consecutiveSlow = 0;
     this._consecutiveFast = 0;
+    this._startCaptionClock();
     this._sendTick();
     dlog("[Zenslop/parent] Ticking started (self-clocking)");
   }
@@ -240,6 +241,26 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     }
   }
 
+  _startCaptionClock() {
+    const win = this._timerWindow || this.browsingContext?.topChromeWindow;
+    if (!win || this._captionTimer) return;
+    const tick = () => {
+      if (!this._tickScheduled) return;
+      try {
+        this.sendAsyncMessage("ZenPiP:CaptionTick", {});
+      } catch (_) {}
+    };
+    tick();
+    this._captionTimer = win.setInterval(tick, CAPTION_TICK_MS);
+  }
+
+  _stopCaptionClock() {
+    if (!this._captionTimer) return;
+    const win = this._timerWindow || this.browsingContext?.topChromeWindow;
+    try { win?.clearInterval(this._captionTimer); } catch (_) {}
+    this._captionTimer = null;
+  }
+
   _onFrameDelivered() {
     if (!this._tickScheduled || !this._lastTickSentAt) return;
     const elapsed = this._now() - this._lastTickSentAt;
@@ -272,6 +293,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._tickScheduled = false;
     this._clearNextTick();
     this._clearSafetyTimeout();
+    this._stopCaptionClock();
     this._timerWindow = null;
   }
 
