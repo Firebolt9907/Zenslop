@@ -22,6 +22,7 @@
 
   const CONFIG = Object.freeze({
     GAP: 6,
+    TAB_LIST_CLEARANCE: 24,
     ANIM_MS: 220,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
@@ -386,10 +387,15 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        // Measure from the stable media-toolbar edge to the actual rendered
-        // top. This includes the source aspect ratio, caption height, gaps, and
-        // any temporary expansion of the media controls in one value.
-        const reservedHeight = Math.max(0, baseTop - top + CONFIG.GAP);
+        // Measure from the tab scroller's real lower edge. With stacked media
+        // cards that edge can sit below the toolbar's top, so using baseTop
+        // alone leaves the last tabs underneath the fixed PiP.
+        const tabListBottom =
+          getTabPaddingTarget()?.getBoundingClientRect().bottom ?? baseTop;
+        const reservedHeight = Math.max(
+          0,
+          tabListBottom - top + CONFIG.GAP + CONFIG.TAB_LIST_CLEARANCE,
+        );
         setTabListPadding(
           userHidden
             ? 0
