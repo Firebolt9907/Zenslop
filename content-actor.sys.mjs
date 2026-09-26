@@ -341,19 +341,106 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     return text;
   }
 
+  _extractJSONAt(text, start) {
+    const objectStart = text.indexOf("{", start);
+    if (objectStart < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = objectStart; i < text.length; i++) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === "{") depth++;
+      else if (char === "}" && --depth === 0) {
+        try {
+          return JSON.parse(text.slice(objectStart, i + 1));
+        } catch (_) {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  _getInlinePlayerResponse(doc) {
+    const marker = "ytInitialPlayerResponse";
+    for (const script of doc?.scripts || []) {
+      const text = script.textContent || "";
+      let offset = 0;
+      while ((offset = text.indexOf(marker, offset)) >= 0) {
+        const response = this._extractJSONAt(text, offset + marker.length);
+        if (response?.captions?.playerCaptionsTracklistRenderer
+          ?.captionTracks?.length) {
+          return response;
+        }
+        offset += marker.length;
+      }
+    }
+    return null;
+  }
+
   _getCaptionTrackInfo() {
     const win = this.contentWindow;
     const doc = win?.document;
     if (!win || !doc) return null;
 
     try {
+      // Prefer the exact caption request YouTube's player made. It can contain
+      // session-bound proof tokens that are absent from the public track URL
+      // in ytInitialPlayerResponse. Resource timing keeps the request URL even
+      // after YouTube has consumed its response.
+      const resources = win.performance?.getEntriesByType?.("resource") || [];
+      const pageUrl = new win.URL(win.location.href);
+      const currentVideoId = pageUrl.searchParams.get("v") ||
+        /^\/(?:shorts|embed|live)\/([^/?]+)/.exec(pageUrl.pathname)?.[1] ||
+        "";
+      for (let i = resources.length - 1; i >= 0; i--) {
+        try {
+          const url = new win.URL(resources[i].name);
+          if (url.hostname.endsWith("youtube.com") &&
+              url.pathname.endsWith("/api/timedtext")) {
+            const resourceVideoId = url.searchParams.get("v") || "";
+            if (currentVideoId && resourceVideoId &&
+                resourceVideoId !== currentVideoId) {
+              continue;
+            }
+            const baseUrl = url.href;
+            return {
+              baseUrl,
+              translationCode: "",
+              key: `loaded|${baseUrl}`,
+            };
+          }
+        } catch (_) {}
+      }
+
       const pageWindow = win.wrappedJSObject || win;
       const playerElement = doc.querySelector("#movie_player, .html5-video-player");
       const player = playerElement?.wrappedJSObject || playerElement;
-      const response = player?.getPlayerResponse?.() ||
-        pageWindow.ytInitialPlayerResponse;
-      const renderer = response?.captions
-        ?.playerCaptionsTracklistRenderer;
+      let playerResponse = null;
+      try {
+        playerResponse = player?.getPlayerResponse?.() || null;
+      } catch (_) {}
+      let globalResponse = null;
+      try {
+        globalResponse = pageWindow.ytInitialPlayerResponse || null;
+      } catch (_) {}
+      const responses = [
+        playerResponse,
+        globalResponse,
+        this._getInlinePlayerResponse(doc),
+      ];
+      const response = responses.find(candidate =>
+        candidate?.captions?.playerCaptionsTracklistRenderer
+          ?.captionTracks?.length,
+      );
+      const renderer = response?.captions?.playerCaptionsTracklistRenderer;
       const tracks = Array.from(renderer?.captionTracks || []);
       if (!tracks.length) return null;
 
@@ -426,6 +513,66 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         append: Boolean(event.aAppend),
       });
     }
+    return this._finalizeCaptionCues(cues);
+  }
+
+  _parseCaptionXML(text) {
+    if (!text) return [];
+    const parser = new this.contentWindow.DOMParser();
+    const doc = parser.parseFromString(text, "text/xml");
+    if (doc.querySelector("parsererror")) return [];
+    const cues = [];
+
+    for (const paragraph of doc.querySelectorAll("p")) {
+      const startValue = paragraph.getAttribute("t");
+      if (startValue === null) continue;
+      const startMs = Number(startValue);
+      if (!Number.isFinite(startMs)) continue;
+      const durationMs = Number(paragraph.getAttribute("d"));
+      const segments = Array.from(paragraph.querySelectorAll(":scope > s"))
+        .map(segment => ({
+          text: segment.textContent || "",
+          startMs: startMs + (Number(segment.getAttribute("t")) || 0),
+        }))
+        .filter(segment => segment.text && segment.text !== "\n");
+      if (!segments.length && paragraph.textContent) {
+        segments.push({ text: paragraph.textContent, startMs });
+      }
+      if (!segments.length) continue;
+      cues.push({
+        startMs,
+        endMs: startMs +
+          (Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 3000),
+        segments,
+        windowId: paragraph.getAttribute("w") || undefined,
+        append: paragraph.getAttribute("a") === "1",
+      });
+    }
+
+    for (const node of doc.querySelectorAll("transcript > text")) {
+      const startValue = node.getAttribute("start");
+      if (startValue === null) continue;
+      const startSeconds = Number(startValue);
+      if (!Number.isFinite(startSeconds)) continue;
+      const durationSeconds = Number(node.getAttribute("dur"));
+      const startMs = startSeconds * 1000;
+      const value = node.textContent || "";
+      if (!value.trim()) continue;
+      cues.push({
+        startMs,
+        endMs: startMs +
+          (Number.isFinite(durationSeconds) && durationSeconds > 0
+            ? durationSeconds * 1000
+            : 3000),
+        segments: [{ text: value, startMs }],
+        windowId: undefined,
+        append: false,
+      });
+    }
+    return this._finalizeCaptionCues(cues);
+  }
+
+  _finalizeCaptionCues(cues) {
     cues.sort((a, b) => a.startMs - b.startMs);
     let maxEndThrough = -Infinity;
     for (const cue of cues) {
@@ -459,15 +606,30 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
           !url.hostname.endsWith("youtube-nocookie.com")) {
         throw new Error("Unexpected caption host");
       }
-      url.searchParams.set("fmt", "json3");
       if (track.translationCode) {
         url.searchParams.set("tlang", track.translationCode);
       }
-      const response = await this.contentWindow.fetch(url.href, {
-        credentials: "include",
-      });
-      if (!response.ok) throw new Error(`Caption HTTP ${response.status}`);
-      const cues = this._parseCaptionJSON3(await response.json());
+      let cues = [];
+      for (const format of ["json3", "srv3", ""]) {
+        if (format) url.searchParams.set("fmt", format);
+        else url.searchParams.delete("fmt");
+        const response = await this.contentWindow.fetch(url.href, {
+          credentials: "include",
+        });
+        if (!response.ok) continue;
+        const body = await response.text();
+        if (!body) continue;
+        if (format === "json3") {
+          try {
+            cues = this._parseCaptionJSON3(JSON.parse(body));
+          } catch (_) {
+            cues = [];
+          }
+        } else {
+          cues = this._parseCaptionXML(body);
+        }
+        if (cues.length) break;
+      }
       if (!cues.length) throw new Error("Caption track contained no cues");
       if (serial !== this._captionLoadSerial || video !== this._video) return;
       this._captionLoadPendingKey = "";

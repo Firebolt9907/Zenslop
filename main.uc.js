@@ -106,7 +106,7 @@
       box-sizing: border-box !important;
       padding-bottom: var(--zenslop-tab-list-padding, 0px) !important;
     }
-    #zen-sidebar-pip-toggle {
+    .zen-sidebar-pip-toggle {
       flex: 0 0 auto;
       max-width: 24px !important;
       max-height: 24px !important;
@@ -115,6 +115,9 @@
       margin: 0 2px !important;
       padding: 0 !important;
       box-sizing: border-box !important;
+    }
+    .zen-media-card:not([can-pip]) .zen-sidebar-pip-toggle {
+      display: none !important;
     }
     [zenslop-parked="true"] {
       display: none !important;
@@ -508,12 +511,23 @@
     "aria-hidden",
   ];
 
-  let toggleBtn = null;
-  let nativePipBtn = null;
+  const togglesByNativeButton = new Map();
+
+  function syncToggleIcons() {
+    for (const [nativeButton, toggle] of togglesByNativeButton) {
+      if (!nativeButton.isConnected || !toggle.isConnected) {
+        togglesByNativeButton.delete(nativeButton);
+        continue;
+      }
+      const icon = userHidden ? EYE_OFF_URL : EYE_URL;
+      if (toggle.style.listStyleImage !== icon) {
+        toggle.style.listStyleImage = icon;
+      }
+    }
+  }
 
   function parkNativePipButton(btn) {
-    if (!btn || btn === toggleBtn) return;
-    nativePipBtn = btn;
+    if (!btn || btn.hasAttribute("zenslop-toggle")) return;
     if (btn.getAttribute("zenslop-parked") !== "true") {
       btn.setAttribute("zenslop-parked", "true");
     }
@@ -527,56 +541,52 @@
 
   function buildToggle(template) {
     const btn = template.cloneNode(true);
-    btn.id = "zen-sidebar-pip-toggle";
+    btn.removeAttribute("id");
+    btn.classList.remove("zen-media-pip-button");
+    btn.classList.add("zen-sidebar-pip-toggle");
+    btn.removeAttribute("zenslop-parked");
+    btn.setAttribute("zenslop-toggle", "true");
     btn.setAttribute("tooltiptext", "Toggle sidebar PiP");
     for (const a of STRIPPED_ATTRS) btn.removeAttribute(a);
-    btn.style.listStyleImage = EYE_URL;
+    btn.style.listStyleImage = userHidden ? EYE_OFF_URL : EYE_URL;
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       userHidden = !userHidden;
-      btn.style.listStyleImage = userHidden ? EYE_OFF_URL : EYE_URL;
+      syncToggleIcons();
       bump();
       _notifyTickState();
     });
-    toggleBtn = btn;
     return btn;
   }
 
-  function findExistingPipButton() {
-    const candidates = musicPlayerUI.querySelectorAll(PIP_BUTTON_SELECTORS);
-    for (const c of candidates) if (c !== toggleBtn) return c;
-    return null;
-  }
-
-  function placeToggle() {
-    if (toggleBtn && toggleBtn.isConnected) {
-      if (!nativePipBtn || !nativePipBtn.isConnected) {
-        parkNativePipButton(findExistingPipButton());
-      } else {
-        parkNativePipButton(nativePipBtn);
+  function placeToggles() {
+    for (const [nativeButton, toggle] of togglesByNativeButton) {
+      if (!nativeButton.isConnected || !toggle.isConnected) {
+        togglesByNativeButton.delete(nativeButton);
       }
-      return true;
     }
-    const existing = findExistingPipButton();
-    if (existing && existing.parentNode) {
-      const parent = existing.parentNode;
-      const btn = buildToggle(existing);
 
-      parent.insertBefore(btn, existing);
-      return true;
+    const nativeButtons = musicPlayerUI.querySelectorAll(PIP_BUTTON_SELECTORS);
+    for (const nativeButton of nativeButtons) {
+      if (nativeButton.hasAttribute("zenslop-toggle")) continue;
+      const existingToggle = togglesByNativeButton.get(nativeButton);
+      if (existingToggle?.isConnected) {
+        parkNativePipButton(nativeButton);
+        continue;
+      }
+      if (!nativeButton.parentNode) continue;
+      const toggle = buildToggle(nativeButton);
+      nativeButton.parentNode.insertBefore(toggle, nativeButton);
+      togglesByNativeButton.set(nativeButton, toggle);
+      parkNativePipButton(nativeButton);
     }
-    return false;
+    syncToggleIcons();
   }
 
-  if (!placeToggle()) {
-    const obs = new MutationObserver(() => {
-      if (placeToggle()) obs.disconnect();
-    });
-    obs.observe(musicPlayerUI, { childList: true, subtree: true });
-  }
+  placeToggles();
   new MutationObserver(() => {
-    placeToggle();
+    placeToggles();
   }).observe(musicPlayerUI, {
     attributes: true,
     attributeFilter: ["hidden", "style", "class", "collapsed"],
