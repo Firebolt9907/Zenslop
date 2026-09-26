@@ -42,7 +42,7 @@
   const MUSIC_PLAYER_SELECTORS =
     "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
   const TAB_LIST_SELECTORS =
-    "#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs";
+    "#zen-tabs-wrapper, #tabbrowser-arrowscrollbox, #tabbrowser-tabs";
   const PIP_BUTTON_SELECTORS = [
     '[id*="pictureinpicture" i]',
     '[class*="pictureinpicture" i]',
@@ -101,6 +101,10 @@
       z-index: 11;
       pointer-events: none;
       transition: opacity ${CONFIG.ANIM_MS}ms ease;
+    }
+    [zenslop-tab-padding="true"] {
+      box-sizing: border-box !important;
+      padding-bottom: var(--zenslop-tab-list-padding, 0px) !important;
     }
     #zen-sidebar-pip-toggle {
       flex: 0 0 auto;
@@ -178,51 +182,31 @@
   }
 
   let lastTabPad = -1;
-  let paddedTab = null;
-  let tabsContainer = null;
-  function getTabsContainer() {
-    if (tabsContainer && tabsContainer.isConnected) return tabsContainer;
-    tabsContainer = document.querySelector("#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs");
-    return tabsContainer;
+  let paddedTabList = null;
+  function getTabPaddingTarget() {
+    if (paddedTabList?.isConnected) return paddedTabList;
+    return document.querySelector(TAB_LIST_SELECTORS);
   }
-  function findBottomMostTab() {
-    const container = getTabsContainer();
-    const tabs = container ? container.querySelectorAll(".tabbrowser-tab") : document.querySelectorAll(".tabbrowser-tab");
-    for (let i = tabs.length - 1; i >= 0; i--) {
-      const t = tabs[i];
-      if (t.hidden || t.style.display === "none" || t.getAttribute("collapsed") === "true") {
-        continue;
-      }
-      if (t.offsetWidth === 0 || t.offsetHeight === 0) {
-        continue;
-      }
-      return t;
+  function clearTabListPadding() {
+    if (paddedTabList?.isConnected) {
+      paddedTabList.removeAttribute("zenslop-tab-padding");
+      paddedTabList.style.removeProperty("--zenslop-tab-list-padding");
     }
-    return null;
-  }
-  function clearPaddedTab() {
-    if (paddedTab && paddedTab.isConnected) {
-      if (paddedTab.style.marginBottom !== "") {
-        paddedTab.style.marginBottom = "";
-      }
-    }
-    paddedTab = null;
+    paddedTabList = null;
   }
   function setTabListPadding(px) {
-    const target = px > 0 ? findBottomMostTab() : null;
-    if (px === lastTabPad && target === paddedTab) return;
+    const target = px > 0 ? getTabPaddingTarget() : null;
+    if (px === lastTabPad && target === paddedTabList) return;
     lastTabPad = px;
 
-    const value = px > 0 ? px + "px" : "";
-    if (target !== paddedTab) clearPaddedTab();
+    if (target !== paddedTabList) clearTabListPadding();
     if (target) {
-      // One margin inside the scrollable tab list is the spacer. Applying the
-      // same value to each nested tab container compounded the reserved space,
-      // especially for tall or otherwise unusual source aspect ratios.
-      if (target.style.marginBottom !== value) {
-        target.style.marginBottom = value;
-      }
-      paddedTab = target;
+      // Zen's wrapper is the vertical scroll container. Padding this one
+      // element creates a reachable empty area below the final tab, while
+      // avoiding the compounded padding caused by changing nested containers.
+      target.setAttribute("zenslop-tab-padding", "true");
+      target.style.setProperty("--zenslop-tab-list-padding", px + "px");
+      paddedTabList = target;
     }
   }
 
