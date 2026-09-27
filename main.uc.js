@@ -22,7 +22,7 @@
 
   const CONFIG = Object.freeze({
     GAP: 6,
-    TAB_LIST_CLEARANCE: 24,
+    TAB_LIST_CLEARANCE: 32,
     ANIM_MS: 220,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
@@ -266,7 +266,11 @@
 
     const { visible, opacity } = getMediaPlayerVisibility();
     const effectivelyVisible =
-      visible && !userHidden && !sourceTabActive && browserWindowActive;
+      visible &&
+      opacity > 0.01 &&
+      !userHidden &&
+      !sourceTabActive &&
+      browserWindowActive;
     if (effectivelyVisible !== lastVisible) {
       pipContainer.style.visibility = effectivelyVisible ? "visible" : "hidden";
       captionContainer.style.visibility = effectivelyVisible
@@ -392,15 +396,19 @@
         // alone leaves the last tabs underneath the fixed PiP.
         const tabListBottom =
           getTabPaddingTarget()?.getBoundingClientRect().bottom ?? baseTop;
+        const captionReserve = captionHeight > 0
+          ? captionHeight + CONFIG.GAP
+          : 0;
+        const minimumContentReserve =
+          height +
+          captionReserve +
+          CONFIG.GAP * 2 +
+          CONFIG.TAB_LIST_CLEARANCE;
         const reservedHeight = Math.max(
-          0,
+          minimumContentReserve,
           tabListBottom - top + CONFIG.GAP + CONFIG.TAB_LIST_CLEARANCE,
         );
-        setTabListPadding(
-          userHidden
-            ? 0
-            : Math.ceil(reservedHeight),
-        );
+        setTabListPadding(Math.ceil(reservedHeight));
       }
     } else {
       captionContainer.style.display = "none";
@@ -484,6 +492,7 @@
     if (!browserWindowActive) {
       pipContainer.style.visibility = "hidden";
       captionContainer.style.visibility = "hidden";
+      setTabListPadding(0);
     }
     if (isStreaming) bump();
     _notifyTickState();
@@ -560,6 +569,7 @@
       e.stopPropagation();
       userHidden = !userHidden;
       syncToggleIcons();
+      if (userHidden) setTabListPadding(0);
       bump();
       _notifyTickState();
     });
@@ -701,6 +711,7 @@
     setSourceTabActive(active) {
       if (sourceTabActive === active) return;
       sourceTabActive = active;
+      if (sourceTabActive) setTabListPadding(0);
       if (isStreaming) bump();
       _notifyTickState();
     },
