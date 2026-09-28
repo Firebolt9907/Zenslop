@@ -22,7 +22,7 @@
 
   const CONFIG = Object.freeze({
     GAP: 6,
-    TAB_LIST_CLEARANCE: 32,
+    TAB_LIST_CLEARANCE: 6,
     ANIM_MS: 220,
     LAYOUT_ANIM_MS: 180,
     CAPTION_ANIM_MS: 180,
@@ -87,10 +87,11 @@
     #zen-sidebar-pip-container::after {
       content: "";
       position: absolute;
-      inset: 0;
+      inset: 0.5px;
       box-sizing: border-box;
       border: 1px solid color-mix(in srgb, white 8%, transparent);
-      border-radius: inherit;
+      border-radius: calc(var(--zen-border-radius) - 0.5px);
+      z-index: 1;
       pointer-events: none;
     }
     #zen-sidebar-pip-container > canvas {
@@ -139,6 +140,7 @@
       height: var(--zenslop-tab-list-height) !important;
       max-height: var(--zenslop-tab-list-height) !important;
       flex: 0 1 var(--zenslop-tab-list-height) !important;
+      padding-bottom: 0 !important;
     }
     .zen-sidebar-pip-toggle {
       flex: 0 0 auto;
@@ -240,6 +242,10 @@
 
     if (target !== sizedTabList) clearTabListHeight();
     if (target) {
+      // Clean up the attribute and property used by versions that reserved
+      // space with bottom padding instead of changing the list height.
+      target.removeAttribute("zenslop-tab-padding");
+      target.style.removeProperty("--zenslop-tab-list-padding");
       target.setAttribute("zenslop-tab-list-sized", "true");
       target.style.setProperty("--zenslop-tab-list-height", px + "px");
       sizedTabList = target;
