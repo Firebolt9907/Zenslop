@@ -75,8 +75,6 @@
       position: fixed;
       background: transparent;
       display: none;
-      box-sizing: border-box;
-      border: 1px solid color-mix(in srgb, white 8%, transparent);
       border-radius: var(--zen-border-radius);
       overflow: hidden;
       contain: strict;
@@ -85,6 +83,15 @@
       transform-origin: 50% 100%;
       transition: ${LAYOUT_TRANSITION};
       will-change: opacity, transform, top, left, width, height;
+    }
+    #zen-sidebar-pip-container::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      box-sizing: border-box;
+      border: 1px solid color-mix(in srgb, white 8%, transparent);
+      border-radius: inherit;
+      pointer-events: none;
     }
     #zen-sidebar-pip-container > canvas {
       width: 100%;
