@@ -43,8 +43,8 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
           controller.registerSource(this.browsingContext.id, {
             startTick: (w) => { this._startTicking(w); },
             stopTick: () => { this._stopTicking(); },
-            setProcessingActive: (active) => {
-              this._setProcessingActive(active);
+            setProcessingActive: (active, captionMode) => {
+              this._setProcessingActive(active, captionMode);
             },
             setMaxDimension: (maxDimension) => {
               this._setMaxDimension(maxDimension);
@@ -91,6 +91,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
       }
 
       case "ZenPiP:Caption": {
+        if (this._captionMode === "off") break;
         const controller = win.ZenPiPController;
         const activeBC = controller?.getActiveBC?.();
         if (activeBC && activeBC.id === this.browsingContext.id) {
@@ -131,17 +132,26 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._lastTickSentAt = 0;
     this._consecutiveSlow = 0;
     this._consecutiveFast = 0;
-    this._startCaptionClock();
+    if (this._captionMode !== "off") this._startCaptionClock();
     this._sendTick();
     dlog("[Zenslop/parent] Ticking started (self-clocking)");
   }
 
-  _setProcessingActive(active) {
+  _setProcessingActive(active, captionMode = "off") {
+    this._captionMode = captionMode === "on" || captionMode === "youtube"
+      ? captionMode
+      : "off";
     try {
       this.sendAsyncMessage("ZenPiP:SetProcessingState", {
         active: Boolean(active),
+        captionMode: this._captionMode,
       });
     } catch (_) {}
+    if (this._captionMode !== "off" && active && this._tickScheduled) {
+      this._startCaptionClock();
+    } else if (this._captionMode === "off") {
+      this._stopCaptionClock();
+    }
   }
 
   _setMaxDimension(maxDimension) {

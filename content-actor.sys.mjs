@@ -6,6 +6,7 @@ const DEBUG = false;
 export class ZenSidebarPiPChild extends JSWindowActorChild {
   actorCreated() {
     this._processingActive = false;
+    this._captionMode = "off";
     this._lastCaptionText = "";
     this._captionText = "";
     this._captionCues = null;
@@ -187,7 +188,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _startCaptionTracking() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       return;
     }
     if (this._captionRootObserver) {
@@ -310,6 +312,28 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     return distinct.join(" ");
   }
 
+  _sourceCaptionsEnabled() {
+    if (this._captionMode === "on") return true;
+    if (this._captionMode !== "youtube") return false;
+
+    const doc = this.contentWindow?.document;
+    const ccButton = doc?.querySelector(".ytp-subtitles-button");
+    if (ccButton) {
+      return (
+        ccButton.getAttribute("aria-pressed") === "true" ||
+        ccButton.classList.contains("ytp-button-active")
+      );
+    }
+
+    try {
+      const player = doc?.querySelector(".html5-video-player");
+      const track = player?.getOption?.("captions", "track");
+      return Boolean(track?.languageCode);
+    } catch (_) {
+      return false;
+    }
+  }
+
   _appendCaptionText(previous, next) {
     previous = String(previous || "").replace(/\s+/g, " ").trim();
     next = String(next || "").replace(/\s+/g, " ").trim();
@@ -334,21 +358,16 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _syncCaption() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       this._captionText = "";
       return "";
     }
 
     const doc = this.contentWindow?.document;
     if (!doc) return this._captionText;
-    const ccButton = doc.querySelector(".ytp-subtitles-button");
-    const captionsEnabled =
-      !ccButton ||
-      ccButton.getAttribute("aria-pressed") === "true" ||
-      ccButton.classList.contains("ytp-button-active");
-
     let text = "";
-    if (captionsEnabled) {
+    if (this._sourceCaptionsEnabled()) {
       const windowParts = new Map();
       for (const segment of doc.querySelectorAll(".ytp-caption-segment")) {
         const windowEl = segment.closest(".caption-window");
@@ -624,7 +643,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async _ensureCaptionTrack() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       return;
     }
     const now = this.contentWindow?.performance?.now?.() ?? Date.now();
@@ -730,18 +750,13 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _updateCaptionFromClock() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       return;
     }
     this._ensureCaptionTrack();
-    const doc = this.contentWindow?.document;
-    const ccButton = doc?.querySelector(".ytp-subtitles-button");
-    const captionsEnabled =
-      !ccButton ||
-      ccButton.getAttribute("aria-pressed") === "true" ||
-      ccButton.classList.contains("ytp-button-active");
     let text = "";
-    if (captionsEnabled) {
+    if (this._sourceCaptionsEnabled()) {
       text = this._captionCues
         ? this._timedCaptionAt(this._video.currentTime * 1000)
         : this._syncCaption();
@@ -779,14 +794,19 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (clear) this._sendCaption("");
   }
 
-  _setProcessingActive(active) {
+  _setProcessingActive(active, captionMode = "off") {
     active = Boolean(active);
-    if (this._processingActive === active) return;
+    captionMode = captionMode === "on" || captionMode === "youtube"
+      ? captionMode
+      : "off";
+    if (this._processingActive === active &&
+        this._captionMode === captionMode) return;
     this._processingActive = active;
-    if (active) {
+    this._captionMode = captionMode;
+    if (active && captionMode !== "off") {
       this._startCaptionTracking();
     } else {
-      this._stopCaptionTracking(false);
+      this._stopCaptionTracking(captionMode === "off");
     }
   }
 
@@ -909,7 +929,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       return;
     }
     if (msg.name === "ZenPiP:SetProcessingState") {
-      this._setProcessingActive(msg.data?.active);
+      this._setProcessingActive(
+        msg.data?.active,
+        msg.data?.captionMode,
+      );
     }
   }
 

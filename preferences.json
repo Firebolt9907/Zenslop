@@ -38,5 +38,25 @@
         "value": "30"
       }
     ]
+  },
+  {
+    "property": "mod.zenslop.captions",
+    "label": "Captions",
+    "type": "dropdown",
+    "defaultValue": "youtube",
+    "options": [
+      {
+        "label": "Off",
+        "value": "off"
+      },
+      {
+        "label": "Always On",
+        "value": "on"
+      },
+      {
+        "label": "Follow YouTube",
+        "value": "youtube"
+      }
+    ]
   }
 ]

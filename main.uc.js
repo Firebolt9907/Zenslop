@@ -9,6 +9,8 @@
   window.__zenslopLoaded = true;
 
   const LOG_PREFIX = "[Zenslop]";
+  const CAPTIONS_PREF = "mod.zenslop.captions";
+  const CAPTION_MODES = new Set(["off", "on", "youtube"]);
   const log = (...a) => console.log(LOG_PREFIX, ...a);
   const warn = (...a) => console.warn(LOG_PREFIX, ...a);
   const err = (...a) => console.error(LOG_PREFIX, ...a);
@@ -205,6 +207,21 @@
   let captionExitTimer = null;
   let browserWindowActive = true;
   let captureMaxDimension = -1;
+  function getCaptionMode() {
+    const mode = safe(() =>
+      Services.prefs.getStringPref(CAPTIONS_PREF, "youtube"),
+    );
+    if (CAPTION_MODES.has(mode)) return mode;
+    // Preserve the meaning of the short-lived checkbox version of this pref.
+    const legacyEnabled = safe(() =>
+      Services.prefs.getBoolPref(CAPTIONS_PREF),
+    );
+    if (typeof legacyEnabled === "boolean") {
+      return legacyEnabled ? "youtube" : "off";
+    }
+    return "youtube";
+  }
+  let captionMode = getCaptionMode();
 
   function setCanvasDimensions(w, h) {
     if (!(w > 0) || !(h > 0)) return;
@@ -724,6 +741,20 @@
   const availableSources = new Map();
   const actorRegistry = new Map();
 
+  const captionsPrefObserver = {
+    observe() {
+      const next = getCaptionMode();
+      if (next === captionMode) return;
+      captionMode = next;
+      if (captionMode === "off") clearCaptionImmediately();
+      _notifyTickState();
+    },
+  };
+  safe(() => Services.prefs.addObserver(CAPTIONS_PREF, captionsPrefObserver));
+  window.addEventListener("unload", () => {
+    safe(() => Services.prefs.removeObserver(CAPTIONS_PREF, captionsPrefObserver));
+  }, { once: true });
+
   function isTabPlaying(bc) {
     if (!bc) return false;
     try {
@@ -751,7 +782,7 @@
     if (!info) return;
 
     const processingActive = isStreaming && effectivelyVisible;
-    info.setProcessingActive?.(processingActive);
+    info.setProcessingActive?.(processingActive, captionMode);
     if (processingActive) {
       info.startTick(info.win || window);
     } else {
@@ -809,6 +840,10 @@
       }
     },
     setCaption(text) {
+      if (captionMode === "off") {
+        clearCaptionImmediately();
+        return;
+      }
       const next = String(text || "").replace(/\s+/g, " ").trim().slice(0, 1000);
       if (next) {
         if (next === captionText && !captionHideTimer && !captionExitTimer) return;
