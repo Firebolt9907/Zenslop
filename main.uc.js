@@ -22,6 +22,7 @@
 
   const CONFIG = Object.freeze({
     GAP: 6,
+    TAB_LIST_GAP: 6,
     ANIM_MS: 220,
     LAYOUT_ANIM_MS: 180,
     CAPTION_ANIM_MS: 180,
@@ -86,10 +87,9 @@
     #zen-sidebar-pip-container::after {
       content: "";
       position: absolute;
-      inset: 0.5px;
-      box-sizing: border-box;
-      border: 1px solid color-mix(in srgb, white 8%, transparent);
-      border-radius: calc(var(--zen-border-radius) - 0.5px);
+      inset: 0;
+      border-radius: inherit;
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, white 8%, transparent);
       z-index: 1;
       pointer-events: none;
     }
@@ -435,11 +435,10 @@
         const tabList = getTabListTarget();
         if (tabList) {
           const tabListTop = tabList.getBoundingClientRect().top;
-          // End the scrollable tab list at the fixed PiP. Zen supplies its own
-          // internal spacing, so reserving another gap leaves a visible void.
+          // Keep a small separation between the final tab and the fixed PiP.
           const availableTabListHeight = Math.max(
             0,
-            Math.floor(top - tabListTop),
+            Math.floor(top - CONFIG.TAB_LIST_GAP - tabListTop),
           );
           setTabListHeight(availableTabListHeight);
         }
