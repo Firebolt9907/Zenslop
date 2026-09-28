@@ -6,6 +6,7 @@ const DEBUG = false;
 export class ZenSidebarPiPChild extends JSWindowActorChild {
   actorCreated() {
     this._processingActive = false;
+    this._captionsActive = false;
     this._captionMode = "off";
     this._lastCaptionText = "";
     this._captionText = "";
@@ -170,7 +171,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       this.sendAsyncMessage("ZenPiP:SourceVisibility", { hidden: doc.hidden });
     }
 
-    if (this._processingActive) this._startCaptionTracking();
+    if (this._captionsActive) this._startCaptionTracking();
   }
 
   _isYouTubeDocument() {
@@ -188,7 +189,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _startCaptionTracking() {
-    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
         !this._isYouTubeDocument()) {
       return;
     }
@@ -263,7 +264,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _queueCaptionSync() {
-    if (this._captionSyncQueued || !this._processingActive) return;
+    if (this._captionSyncQueued || !this._captionsActive) return;
     const win = this.contentWindow;
     if (!win) return;
     this._captionSyncQueued = true;
@@ -358,7 +359,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _syncCaption() {
-    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
         !this._isYouTubeDocument()) {
       this._captionText = "";
       return "";
@@ -643,7 +644,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async _ensureCaptionTrack() {
-    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
         !this._isYouTubeDocument()) {
       return;
     }
@@ -750,7 +751,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _updateCaptionFromClock() {
-    if (!this._video || !this._processingActive || this._captionMode === "off" ||
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
         !this._isYouTubeDocument()) {
       return;
     }
@@ -794,16 +795,23 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (clear) this._sendCaption("");
   }
 
-  _setProcessingActive(active, captionMode = "off") {
+  _setProcessingActive(
+    active,
+    captionMode = "off",
+    captionsActive = active,
+  ) {
     active = Boolean(active);
     captionMode = captionMode === "on" || captionMode === "youtube"
       ? captionMode
       : "off";
+    captionsActive = Boolean(captionsActive) && captionMode !== "off";
     if (this._processingActive === active &&
-        this._captionMode === captionMode) return;
+        this._captionMode === captionMode &&
+        this._captionsActive === captionsActive) return;
     this._processingActive = active;
     this._captionMode = captionMode;
-    if (active && captionMode !== "off") {
+    this._captionsActive = captionsActive;
+    if (captionsActive) {
       this._startCaptionTracking();
     } else {
       this._stopCaptionTracking(captionMode === "off");
@@ -932,6 +940,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       this._setProcessingActive(
         msg.data?.active,
         msg.data?.captionMode,
+        msg.data?.captionsActive,
       );
     }
   }

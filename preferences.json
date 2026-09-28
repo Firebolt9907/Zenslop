@@ -58,5 +58,11 @@
         "value": "youtube"
       }
     ]
+  },
+  {
+    "property": "mod.zenslop.captionsWhenPipHidden",
+    "label": "Show Captions When PiP Is Hidden",
+    "type": "checkbox",
+    "defaultValue": false
   }
 ]

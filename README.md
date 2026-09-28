@@ -82,6 +82,8 @@ while substantially reducing cross-process pixel traffic.
 
 The **Captions** mod setting follows the caption state in the YouTube player by
 default. It can also keep captions always on or turn them off entirely.
+Enable **Show Captions When PiP Is Hidden** to keep the caption panel visible
+when the sidebar PiP eye toggle is off.
 
 <!-- TOGGLE SCREENSHOT — close-up of the media controls with the eye-toggle button highlighted -->
 <p align="center">

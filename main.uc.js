@@ -10,6 +10,8 @@
 
   const LOG_PREFIX = "[Zenslop]";
   const CAPTIONS_PREF = "mod.zenslop.captions";
+  const CAPTIONS_WHEN_PIP_HIDDEN_PREF =
+    "mod.zenslop.captionsWhenPipHidden";
   const CAPTION_MODES = new Set(["off", "on", "youtube"]);
   const log = (...a) => console.log(LOG_PREFIX, ...a);
   const warn = (...a) => console.warn(LOG_PREFIX, ...a);
@@ -190,6 +192,7 @@
     lastWidth = -1;
   let lastVisible = null;
   let lastOpacity = NaN;
+  let lastCaptionOpacity = NaN;
   let isStreaming = false;
   let userHidden = false;
   let scheduled = false;
@@ -222,6 +225,9 @@
     return "youtube";
   }
   let captionMode = getCaptionMode();
+  let captionsWhenPipHidden = safe(() =>
+    Services.prefs.getBoolPref(CAPTIONS_WHEN_PIP_HIDDEN_PREF, false),
+  ) === true;
 
   function setCanvasDimensions(w, h) {
     if (!(w > 0) || !(h > 0)) return;
@@ -322,32 +328,44 @@
     if (!isStreaming) return;
 
     const { visible, opacity } = getMediaPlayerVisibility();
-    const effectivelyVisible =
+    const pipVisible =
       visible &&
       opacity > 0.01 &&
       !userHidden &&
       !sourceTabActive &&
       browserWindowActive;
-    if (effectivelyVisible !== lastVisible) {
-      pipContainer.style.visibility = effectivelyVisible ? "visible" : "hidden";
-      captionContainer.style.visibility = effectivelyVisible
+    const captionVisible =
+      visible &&
+      opacity > 0.01 &&
+      captionMode !== "off" &&
+      (!userHidden || captionsWhenPipHidden) &&
+      !sourceTabActive &&
+      browserWindowActive;
+    const visibilityState = `${pipVisible}:${captionVisible}`;
+    if (visibilityState !== lastVisible) {
+      pipContainer.style.visibility = pipVisible ? "visible" : "hidden";
+      captionContainer.style.visibility = captionVisible
         ? "visible"
         : "hidden";
-      lastVisible = effectivelyVisible;
+      lastVisible = visibilityState;
     }
     if (!animating) {
       const op = userHidden ? 0 : opacity;
       if (op !== lastOpacity) {
         pipContainer.style.opacity = String(op);
+        lastOpacity = op;
+      }
+      const captionOpacity = captionVisible ? opacity : 0;
+      if (captionOpacity !== lastCaptionOpacity) {
         captionContainer.style.setProperty(
           "--zenslop-caption-opacity",
-          String(op),
+          String(captionOpacity),
         );
-        lastOpacity = op;
+        lastCaptionOpacity = captionOpacity;
       }
     }
 
-    if (effectivelyVisible) {
+    if (pipVisible || captionVisible) {
       const {
         top: mediaTopRaw,
         baseTop,
@@ -399,67 +417,74 @@
 
         let captionHeight = 0;
         let videoBottom = mediaTop - CONFIG.GAP;
-        if (captionText) {
+        let captionTop = null;
+        if (captionVisible && captionText) {
           const cs = captionContainer.style;
           cs.display = "block";
           cs.width = playerWidth + "px";
           cs.left = left + "px";
           captionHeight = Math.ceil(captionContainer.getBoundingClientRect().height);
-          const captionTop = mediaTop - CONFIG.GAP - captionHeight;
+          captionTop = mediaTop - CONFIG.GAP - captionHeight;
           cs.top = captionTop + "px";
-          videoBottom = captionTop - CONFIG.GAP;
+          if (pipVisible) videoBottom = captionTop - CONFIG.GAP;
         } else {
           captionContainer.style.display = "none";
         }
 
-        const availableHeight = Math.max(2, videoBottom);
-        let width = playerWidth;
-        let height = width / videoAspect;
-        const effectiveMaxHeight = Math.max(
-          2,
-          Math.min(playerWidth, availableHeight),
-        );
-        if (height > effectiveMaxHeight) {
-          height = effectiveMaxHeight;
-          width = height * videoAspect;
-        }
-        const adjustedLeft = left + (playerWidth - width) / 2;
+        let occupiedTop = captionTop;
+        if (pipVisible) {
+          const availableHeight = Math.max(2, videoBottom);
+          let width = playerWidth;
+          let height = width / videoAspect;
+          const effectiveMaxHeight = Math.max(
+            2,
+            Math.min(playerWidth, availableHeight),
+          );
+          if (height > effectiveMaxHeight) {
+            height = effectiveMaxHeight;
+            width = height * videoAspect;
+          }
+          const adjustedLeft = left + (playerWidth - width) / 2;
 
-        const nextCaptureMaxDimension = Math.max(
-          160,
-          Math.ceil(Math.max(width, height)),
-        );
-        if (nextCaptureMaxDimension !== captureMaxDimension) {
-          captureMaxDimension = nextCaptureMaxDimension;
-          const info = sourceBC ? actorRegistry.get(sourceBC.id) : null;
-          info?.setMaxDimension?.(captureMaxDimension);
-        }
+          const nextCaptureMaxDimension = Math.max(
+            160,
+            Math.ceil(Math.max(width, height)),
+          );
+          if (nextCaptureMaxDimension !== captureMaxDimension) {
+            captureMaxDimension = nextCaptureMaxDimension;
+            const info = sourceBC ? actorRegistry.get(sourceBC.id) : null;
+            info?.setMaxDimension?.(captureMaxDimension);
+          }
 
-        const top = videoBottom - height;
-        if (
-          top !== lastTop ||
-          adjustedLeft !== lastLeft ||
-          width !== lastWidth
-        ) {
-          const s = pipContainer.style;
-          s.width = width + "px";
-          s.height = height + "px";
-          s.left = adjustedLeft + "px";
-          s.top = top + "px";
-          lastTop = top;
-          lastLeft = adjustedLeft;
-          lastWidth = width;
-          activeUntil = now + CONFIG.ANIM_TAIL_MS;
+          const top = videoBottom - height;
+          occupiedTop = top;
+          if (
+            top !== lastTop ||
+            adjustedLeft !== lastLeft ||
+            width !== lastWidth
+          ) {
+            const s = pipContainer.style;
+            s.width = width + "px";
+            s.height = height + "px";
+            s.left = adjustedLeft + "px";
+            s.top = top + "px";
+            lastTop = top;
+            lastLeft = adjustedLeft;
+            lastWidth = width;
+            activeUntil = now + CONFIG.ANIM_TAIL_MS;
+          }
         }
         const tabList = getTabListTarget();
-        if (tabList) {
+        if (tabList && occupiedTop !== null) {
           const tabListTop = tabList.getBoundingClientRect().top;
           // Keep a small separation between the final tab and the fixed PiP.
           const availableTabListHeight = Math.max(
             0,
-            Math.floor(top - CONFIG.TAB_LIST_GAP - tabListTop),
+            Math.floor(occupiedTop - CONFIG.TAB_LIST_GAP - tabListTop),
           );
           setTabListHeight(availableTabListHeight);
+        } else if (!pipVisible) {
+          clearTabListHeight();
         }
       }
     } else {
@@ -558,6 +583,7 @@
     lastTop = lastLeft = lastWidth = -1;
     lastVisible = null;
     lastOpacity = NaN;
+    lastCaptionOpacity = NaN;
     captureMaxDimension = -1;
     bump();
     _notifyTickState();
@@ -743,16 +769,30 @@
 
   const captionsPrefObserver = {
     observe() {
-      const next = getCaptionMode();
-      if (next === captionMode) return;
-      captionMode = next;
+      const nextMode = getCaptionMode();
+      const nextWhenHidden = safe(() =>
+        Services.prefs.getBoolPref(CAPTIONS_WHEN_PIP_HIDDEN_PREF, false),
+      ) === true;
+      if (nextMode === captionMode &&
+          nextWhenHidden === captionsWhenPipHidden) return;
+      captionMode = nextMode;
+      captionsWhenPipHidden = nextWhenHidden;
       if (captionMode === "off") clearCaptionImmediately();
+      if (isStreaming) bump();
       _notifyTickState();
     },
   };
   safe(() => Services.prefs.addObserver(CAPTIONS_PREF, captionsPrefObserver));
+  safe(() => Services.prefs.addObserver(
+    CAPTIONS_WHEN_PIP_HIDDEN_PREF,
+    captionsPrefObserver,
+  ));
   window.addEventListener("unload", () => {
     safe(() => Services.prefs.removeObserver(CAPTIONS_PREF, captionsPrefObserver));
+    safe(() => Services.prefs.removeObserver(
+      CAPTIONS_WHEN_PIP_HIDDEN_PREF,
+      captionsPrefObserver,
+    ));
   }, { once: true });
 
   function isTabPlaying(bc) {
@@ -776,14 +816,23 @@
   }
 
   function _notifyTickState() {
-    const effectivelyVisible =
-      !userHidden && !sourceTabActive && browserWindowActive;
+    const frameProcessingActive =
+      isStreaming && !userHidden && !sourceTabActive && browserWindowActive;
     const info = sourceBC ? actorRegistry.get(sourceBC.id) : null;
     if (!info) return;
 
-    const processingActive = isStreaming && effectivelyVisible;
-    info.setProcessingActive?.(processingActive, captionMode);
-    if (processingActive) {
+    const captionProcessingActive =
+      isStreaming &&
+      captionMode !== "off" &&
+      !sourceTabActive &&
+      browserWindowActive &&
+      (!userHidden || captionsWhenPipHidden);
+    info.setProcessingActive?.(
+      frameProcessingActive || captionProcessingActive,
+      captionMode,
+      captionProcessingActive,
+    );
+    if (frameProcessingActive) {
       info.startTick(info.win || window);
     } else {
       info.stopTick();
@@ -991,6 +1040,7 @@
         setTimeout(() => {
           animating = false;
           lastOpacity = NaN;
+          lastCaptionOpacity = NaN;
           s.transition = "";
         }, CONFIG.ANIM_MS + 60);
       }
@@ -1031,6 +1081,7 @@
         isStreaming = false;
         stopTracking();
         lastOpacity = NaN;
+        lastCaptionOpacity = NaN;
         lastVisible = null;
 
         // A different source may have been queued while this hide was running;
