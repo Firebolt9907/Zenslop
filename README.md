@@ -95,6 +95,9 @@ Tunables live at the top of `main.uc.js` in the `CONFIG` block:
 const CONFIG = Object.freeze({
   GAP: 6,                       // px between video bottom and media controls top
   ANIM_MS: 220,                 // entrance / exit animation duration
+  LAYOUT_ANIM_MS: 180,          // smooth caption-driven PiP movement / resizing
+  CAPTION_ANIM_MS: 180,         // caption scale / fade duration
+  CAPTION_GAP_GRACE_MS: 1000,   // hold through short gaps between caption cues
   ANIM_TAIL_MS: 350,            // keep ticking through animations after a state change
   ELEVATED_HOLD_MS: 180,        // hold elevated top through brief glitch frames
   MAX_HEIGHT: 600,              // cap so vertical sources don't take over the sidebar

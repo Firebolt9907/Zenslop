@@ -22,7 +22,11 @@
 
   const CONFIG = Object.freeze({
     GAP: 6,
+    TAB_LIST_GAP: 6,
     ANIM_MS: 220,
+    LAYOUT_ANIM_MS: 180,
+    CAPTION_ANIM_MS: 180,
+    CAPTION_GAP_GRACE_MS: 1000,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
     // A downward move of the player's top edge larger than this (px) is only
@@ -37,12 +41,19 @@
     PIP_OPEN_DEBOUNCE_MS: 1500,
     PIP_OBSERVE_TIMEOUT_MS: 3000,
   });
-  const ANIM_TRANSITION = `opacity ${CONFIG.ANIM_MS}ms ease, transform ${CONFIG.ANIM_MS}ms ease`;
+  const LAYOUT_TRANSITION =
+    `top ${CONFIG.LAYOUT_ANIM_MS}ms ease-out, ` +
+    `left ${CONFIG.LAYOUT_ANIM_MS}ms ease-out, ` +
+    `width ${CONFIG.LAYOUT_ANIM_MS}ms ease-out, ` +
+    `height ${CONFIG.LAYOUT_ANIM_MS}ms ease-out`;
+  const ANIM_TRANSITION =
+    `opacity ${CONFIG.ANIM_MS}ms ease, ` +
+    `transform ${CONFIG.ANIM_MS}ms ease, ${LAYOUT_TRANSITION}`;
 
   const MUSIC_PLAYER_SELECTORS =
     "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
   const TAB_LIST_SELECTORS =
-    "#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs";
+    "#zen-tabs-wrapper, #tabbrowser-arrowscrollbox, #tabbrowser-tabs";
   const PIP_BUTTON_SELECTORS = [
     '[id*="pictureinpicture" i]',
     '[class*="pictureinpicture" i]',
@@ -70,7 +81,18 @@
       z-index: 10;
       pointer-events: none;
       transform-origin: 50% 100%;
-      will-change: opacity, transform;
+      transition: ${LAYOUT_TRANSITION};
+      will-change: opacity, transform, top, left, width, height;
+    }
+    #zen-sidebar-pip-container::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      box-sizing: border-box;
+      border: 1px solid color-mix(in srgb, white 8%, transparent);
+      border-radius: inherit;
+      z-index: 1;
+      pointer-events: none;
     }
     #zen-sidebar-pip-container > canvas {
       width: 100%;
@@ -79,7 +101,8 @@
       max-height: 100%;
       min-width: 0;
       min-height: 0;
-      object-fit: contain;
+      border-radius: calc(var(--zen-border-radius) + 2px);
+      object-fit: fill;
       display: block;
     }
     #zen-sidebar-pip-caption {
@@ -89,7 +112,7 @@
       padding: 7px 10px;
       color: white;
       background: color-mix(in srgb, black 78%, transparent);
-      border: 1px solid color-mix(in srgb, white 14%, transparent);
+      border: 1px solid color-mix(in srgb, white 8%, transparent);
       border-radius: var(--zen-border-radius);
       box-shadow: 0 3px 12px rgb(0 0 0 / 28%);
       font: 600 12px/1.35 system-ui, sans-serif;
@@ -100,9 +123,27 @@
       overflow: hidden;
       z-index: 11;
       pointer-events: none;
-      transition: opacity ${CONFIG.ANIM_MS}ms ease;
+      opacity: 0;
+      transform: translateY(4px) scale(0.96);
+      transform-origin: 50% 100%;
+      transition: opacity ${CONFIG.CAPTION_ANIM_MS}ms ease,
+                  transform ${CONFIG.CAPTION_ANIM_MS}ms ease,
+                  top ${CONFIG.LAYOUT_ANIM_MS}ms ease-out;
+      will-change: opacity, transform, top;
     }
-    #zen-sidebar-pip-toggle {
+    #zen-sidebar-pip-caption[zenslop-caption-visible="true"] {
+      opacity: var(--zenslop-caption-opacity, 1);
+      transform: translateY(0) scale(1);
+    }
+    [zenslop-tab-list-sized="true"] {
+      box-sizing: border-box !important;
+      min-height: 0 !important;
+      height: var(--zenslop-tab-list-height) !important;
+      max-height: var(--zenslop-tab-list-height) !important;
+      flex: 0 1 var(--zenslop-tab-list-height) !important;
+      padding-bottom: 0 !important;
+    }
+    .zen-sidebar-pip-toggle {
       flex: 0 0 auto;
       max-width: 24px !important;
       max-height: 24px !important;
@@ -111,6 +152,9 @@
       margin: 0 2px !important;
       padding: 0 !important;
       box-sizing: border-box !important;
+    }
+    .zen-media-card:not([can-pip]) .zen-sidebar-pip-toggle {
+      display: none !important;
     }
     [zenslop-parked="true"] {
       display: none !important;
@@ -157,6 +201,8 @@
   let animateOutTimer = null;
   let videoAspect = CONFIG.DEFAULT_ASPECT;
   let captionText = "";
+  let captionHideTimer = null;
+  let captionExitTimer = null;
   let browserWindowActive = true;
   let captureMaxDimension = -1;
 
@@ -177,60 +223,34 @@
     }
   }
 
-  let lastTabPad = -1;
-  let paddedTab = null;
-  let tabsContainer = null;
-  function getTabsContainer() {
-    if (tabsContainer && tabsContainer.isConnected) return tabsContainer;
-    tabsContainer = document.querySelector("#tabbrowser-arrowscrollbox, #zen-tabs-wrapper, #tabbrowser-tabs");
-    return tabsContainer;
+  let lastTabListHeight = -1;
+  let sizedTabList = null;
+  function getTabListTarget() {
+    if (sizedTabList?.isConnected) return sizedTabList;
+    return document.querySelector(TAB_LIST_SELECTORS);
   }
-  function findBottomMostTab() {
-    const container = getTabsContainer();
-    const tabs = container ? container.querySelectorAll(".tabbrowser-tab") : document.querySelectorAll(".tabbrowser-tab");
-    for (let i = tabs.length - 1; i >= 0; i--) {
-      const t = tabs[i];
-      if (t.hidden || t.style.display === "none" || t.getAttribute("collapsed") === "true") {
-        continue;
-      }
-      if (t.offsetWidth === 0 || t.offsetHeight === 0) {
-        continue;
-      }
-      return t;
+  function clearTabListHeight() {
+    if (sizedTabList?.isConnected) {
+      sizedTabList.removeAttribute("zenslop-tab-list-sized");
+      sizedTabList.style.removeProperty("--zenslop-tab-list-height");
     }
-    return null;
+    sizedTabList = null;
+    lastTabListHeight = -1;
   }
-  function clearPaddedTab() {
-    if (paddedTab && paddedTab.isConnected) {
-      if (paddedTab.style.marginBottom !== "") {
-        paddedTab.style.marginBottom = "";
-      }
-    }
-    paddedTab = null;
-  }
-  function setTabListPadding(px) {
-    const target = px > 0 ? findBottomMostTab() : null;
-    if (px === lastTabPad && target === paddedTab) return;
-    lastTabPad = px;
+  function setTabListHeight(px) {
+    const target = px >= 0 ? getTabListTarget() : null;
+    if (px === lastTabListHeight && target === sizedTabList) return;
 
-    const value = px > 0 ? px + "px" : "";
-    for (const sel of [
-      "#tabbrowser-arrowscrollbox",
-      "#zen-tabs-wrapper",
-      "#tabbrowser-tabs",
-    ]) {
-      const el = document.querySelector(sel);
-      if (el && el.style.paddingBottom !== value) {
-        el.style.paddingBottom = value;
-      }
-    }
-
-    if (target !== paddedTab) clearPaddedTab();
+    if (target !== sizedTabList) clearTabListHeight();
     if (target) {
-      if (target.style.marginBottom !== value) {
-        target.style.marginBottom = value;
-      }
-      paddedTab = target;
+      // Clean up the attribute and property used by versions that reserved
+      // space with bottom padding instead of changing the list height.
+      target.removeAttribute("zenslop-tab-padding");
+      target.style.removeProperty("--zenslop-tab-list-padding");
+      target.setAttribute("zenslop-tab-list-sized", "true");
+      target.style.setProperty("--zenslop-tab-list-height", px + "px");
+      sizedTabList = target;
+      lastTabListHeight = px;
     }
   }
 
@@ -286,7 +306,11 @@
 
     const { visible, opacity } = getMediaPlayerVisibility();
     const effectivelyVisible =
-      visible && !userHidden && !sourceTabActive && browserWindowActive;
+      visible &&
+      opacity > 0.01 &&
+      !userHidden &&
+      !sourceTabActive &&
+      browserWindowActive;
     if (effectivelyVisible !== lastVisible) {
       pipContainer.style.visibility = effectivelyVisible ? "visible" : "hidden";
       captionContainer.style.visibility = effectivelyVisible
@@ -298,7 +322,10 @@
       const op = userHidden ? 0 : opacity;
       if (op !== lastOpacity) {
         pipContainer.style.opacity = String(op);
-        captionContainer.style.opacity = String(op);
+        captionContainer.style.setProperty(
+          "--zenslop-caption-opacity",
+          String(op),
+        );
         lastOpacity = op;
       }
     }
@@ -407,22 +434,20 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        // Reserve exactly the space occupied by the rendered player. Capping
-        // this to a 16:9 height made taller source videos overlap the tab list
-        // even though their visual container was positioned correctly.
-        const padHeight = height;
-        const captionSpace = captionHeight > 0
-          ? captionHeight + CONFIG.GAP
-          : 0;
-        setTabListPadding(
-          userHidden
-            ? 0
-            : Math.ceil(padHeight + captionSpace + CONFIG.GAP * 2),
-        );
+        const tabList = getTabListTarget();
+        if (tabList) {
+          const tabListTop = tabList.getBoundingClientRect().top;
+          // Keep a small separation between the final tab and the fixed PiP.
+          const availableTabListHeight = Math.max(
+            0,
+            Math.floor(top - CONFIG.TAB_LIST_GAP - tabListTop),
+          );
+          setTabListHeight(availableTabListHeight);
+        }
       }
     } else {
       captionContainer.style.display = "none";
-      setTabListPadding(0);
+      clearTabListHeight();
     }
 
     if (performance.now() < activeUntil) schedule();
@@ -437,6 +462,79 @@
   function bump() {
     activeUntil = performance.now() + CONFIG.ANIM_TAIL_MS;
     schedule();
+  }
+
+  function clearCaptionTimers() {
+    if (captionHideTimer) {
+      clearTimeout(captionHideTimer);
+      captionHideTimer = null;
+    }
+    if (captionExitTimer) {
+      clearTimeout(captionExitTimer);
+      captionExitTimer = null;
+    }
+  }
+
+  function clearCaptionImmediately() {
+    clearCaptionTimers();
+    captionContainer.removeAttribute("zenslop-caption-visible");
+    captionContainer.textContent = "";
+    captionContainer.style.display = "none";
+    captionText = "";
+    lastTop = lastLeft = lastWidth = -1;
+  }
+
+  function showCaption(next) {
+    const wasEmpty = !captionText;
+    clearCaptionTimers();
+    captionText = next;
+    captionContainer.textContent = next;
+    lastTop = lastLeft = lastWidth = -1;
+    if (isStreaming) bump();
+
+    if (wasEmpty) {
+      captionContainer.removeAttribute("zenslop-caption-visible");
+      requestAnimationFrame(() => {
+        if (!captionText) return;
+        // syncPosition has now made the caption measurable and positioned it.
+        // Flush that hidden state so the following attribute change transitions.
+        void captionContainer.getBoundingClientRect();
+        captionContainer.setAttribute("zenslop-caption-visible", "true");
+      });
+    } else {
+      captionContainer.setAttribute("zenslop-caption-visible", "true");
+    }
+  }
+
+  function hideCaptionNow() {
+    clearCaptionTimers();
+    if (!captionText) {
+      captionContainer.removeAttribute("zenslop-caption-visible");
+      return;
+    }
+    captionContainer.removeAttribute("zenslop-caption-visible");
+    captionExitTimer = setTimeout(() => {
+      captionExitTimer = null;
+      captionText = "";
+      captionContainer.textContent = "";
+      lastTop = lastLeft = lastWidth = -1;
+      if (isStreaming) bump();
+    }, CONFIG.CAPTION_ANIM_MS);
+  }
+
+  function hideCaptionAfterGap() {
+    if (!captionText || captionHideTimer || captionExitTimer) return;
+    captionHideTimer = setTimeout(() => {
+      captionHideTimer = null;
+      captionContainer.removeAttribute("zenslop-caption-visible");
+      captionExitTimer = setTimeout(() => {
+        captionExitTimer = null;
+        captionText = "";
+        captionContainer.textContent = "";
+        lastTop = lastLeft = lastWidth = -1;
+        if (isStreaming) bump();
+      }, CONFIG.CAPTION_ANIM_MS);
+    }, CONFIG.CAPTION_GAP_GRACE_MS);
   }
 
   function startTracking() {
@@ -458,7 +556,7 @@
     // restart instead of re-seeding mid-glitch. (pendingDownAt is reset — a
     // fresh timer per stream is fine and self-heals on the next up-frame.)
     pendingDownAt = 0;
-    setTabListPadding(0);
+    clearTabListHeight();
     sourceTabActive = false;
     _notifyTickState();
   }
@@ -502,6 +600,7 @@
     if (!browserWindowActive) {
       pipContainer.style.visibility = "hidden";
       captionContainer.style.visibility = "hidden";
+      clearTabListHeight();
     }
     if (isStreaming) bump();
     _notifyTickState();
@@ -535,12 +634,23 @@
     "aria-hidden",
   ];
 
-  let toggleBtn = null;
-  let nativePipBtn = null;
+  const togglesByNativeButton = new Map();
+
+  function syncToggleIcons() {
+    for (const [nativeButton, toggle] of togglesByNativeButton) {
+      if (!nativeButton.isConnected || !toggle.isConnected) {
+        togglesByNativeButton.delete(nativeButton);
+        continue;
+      }
+      const icon = userHidden ? EYE_OFF_URL : EYE_URL;
+      if (toggle.style.listStyleImage !== icon) {
+        toggle.style.listStyleImage = icon;
+      }
+    }
+  }
 
   function parkNativePipButton(btn) {
-    if (!btn || btn === toggleBtn) return;
-    nativePipBtn = btn;
+    if (!btn || btn.hasAttribute("zenslop-toggle")) return;
     if (btn.getAttribute("zenslop-parked") !== "true") {
       btn.setAttribute("zenslop-parked", "true");
     }
@@ -554,56 +664,53 @@
 
   function buildToggle(template) {
     const btn = template.cloneNode(true);
-    btn.id = "zen-sidebar-pip-toggle";
+    btn.removeAttribute("id");
+    btn.classList.remove("zen-media-pip-button");
+    btn.classList.add("zen-sidebar-pip-toggle");
+    btn.removeAttribute("zenslop-parked");
+    btn.setAttribute("zenslop-toggle", "true");
     btn.setAttribute("tooltiptext", "Toggle sidebar PiP");
     for (const a of STRIPPED_ATTRS) btn.removeAttribute(a);
-    btn.style.listStyleImage = EYE_URL;
+    btn.style.listStyleImage = userHidden ? EYE_OFF_URL : EYE_URL;
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       userHidden = !userHidden;
-      btn.style.listStyleImage = userHidden ? EYE_OFF_URL : EYE_URL;
+      syncToggleIcons();
+      if (userHidden) clearTabListHeight();
       bump();
       _notifyTickState();
     });
-    toggleBtn = btn;
     return btn;
   }
 
-  function findExistingPipButton() {
-    const candidates = musicPlayerUI.querySelectorAll(PIP_BUTTON_SELECTORS);
-    for (const c of candidates) if (c !== toggleBtn) return c;
-    return null;
-  }
-
-  function placeToggle() {
-    if (toggleBtn && toggleBtn.isConnected) {
-      if (!nativePipBtn || !nativePipBtn.isConnected) {
-        parkNativePipButton(findExistingPipButton());
-      } else {
-        parkNativePipButton(nativePipBtn);
+  function placeToggles() {
+    for (const [nativeButton, toggle] of togglesByNativeButton) {
+      if (!nativeButton.isConnected || !toggle.isConnected) {
+        togglesByNativeButton.delete(nativeButton);
       }
-      return true;
     }
-    const existing = findExistingPipButton();
-    if (existing && existing.parentNode) {
-      const parent = existing.parentNode;
-      const btn = buildToggle(existing);
 
-      parent.insertBefore(btn, existing);
-      return true;
+    const nativeButtons = musicPlayerUI.querySelectorAll(PIP_BUTTON_SELECTORS);
+    for (const nativeButton of nativeButtons) {
+      if (nativeButton.hasAttribute("zenslop-toggle")) continue;
+      const existingToggle = togglesByNativeButton.get(nativeButton);
+      if (existingToggle?.isConnected) {
+        parkNativePipButton(nativeButton);
+        continue;
+      }
+      if (!nativeButton.parentNode) continue;
+      const toggle = buildToggle(nativeButton);
+      nativeButton.parentNode.insertBefore(toggle, nativeButton);
+      togglesByNativeButton.set(nativeButton, toggle);
+      parkNativePipButton(nativeButton);
     }
-    return false;
+    syncToggleIcons();
   }
 
-  if (!placeToggle()) {
-    const obs = new MutationObserver(() => {
-      if (placeToggle()) obs.disconnect();
-    });
-    obs.observe(musicPlayerUI, { childList: true, subtree: true });
-  }
+  placeToggles();
   new MutationObserver(() => {
-    placeToggle();
+    placeToggles();
   }).observe(musicPlayerUI, {
     attributes: true,
     attributeFilter: ["hidden", "style", "class", "collapsed"],
@@ -703,15 +810,20 @@
     },
     setCaption(text) {
       const next = String(text || "").replace(/\s+/g, " ").trim().slice(0, 1000);
-      if (next === captionText) return;
-      captionText = next;
-      captionContainer.textContent = next;
-      lastTop = lastLeft = lastWidth = -1;
-      if (isStreaming) bump();
+      if (next) {
+        if (next === captionText && !captionHideTimer && !captionExitTimer) return;
+        showCaption(next);
+      } else {
+        hideCaptionAfterGap();
+      }
+    },
+    hideCaption() {
+      hideCaptionNow();
     },
     setSourceTabActive(active) {
       if (sourceTabActive === active) return;
       sourceTabActive = active;
+      if (sourceTabActive) clearTabListHeight();
       if (isStreaming) bump();
       _notifyTickState();
     },
@@ -788,7 +900,7 @@
       const nextSourceBC = browsingContext || null;
       const sourceChanged =
         previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
-      if (sourceChanged) this.setCaption("");
+      if (sourceChanged) clearCaptionImmediately();
       sourceBC = nextSourceBC;
 
       if (sourceBC) {
@@ -876,7 +988,7 @@
         animateOutTimer = null;
         animating = false;
         safe(() => canvasCtx.clearRect(0, 0, canvasEl.width, canvasEl.height));
-        this.setCaption("");
+        clearCaptionImmediately();
         sourceBC = null;
         s.display = "none";
         s.transition = "";

@@ -1,4 +1,5 @@
 const MAX_FRAME_DIMENSION = 480;
+const CAPTION_TRACK_CHECK_MS = 2000;
 
 const DEBUG = false;
 
@@ -6,6 +7,12 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   actorCreated() {
     this._processingActive = false;
     this._lastCaptionText = "";
+    this._captionText = "";
+    this._captionCues = null;
+    this._captionTrackKey = "";
+    this._captionTrackCheckAt = 0;
+    this._captionLoadSerial = 0;
+    this._captionLoadPendingKey = "";
     this._debug(
       "[Zenslop/content] actorCreated",
       this.contentWindow?.location?.href,
@@ -186,6 +193,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (this._captionRootObserver) {
       this._refreshCaptionRoot();
       this._syncCaption();
+      this._ensureCaptionTrack();
       return;
     }
 
@@ -222,6 +230,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
     this._refreshCaptionRoot();
     this._syncCaption();
+    this._ensureCaptionTrack();
   }
 
   _refreshCaptionRoot() {
@@ -243,6 +252,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       this._captionObserver.observe(nextRoot, {
         childList: true,
         characterData: true,
+        attributes: true,
+        attributeFilter: ["class", "style", "aria-hidden"],
         subtree: true,
       });
     }
@@ -256,17 +267,45 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._captionSyncQueued = true;
     win.queueMicrotask(() => {
       this._captionSyncQueued = false;
-      this._syncCaption();
+      const text = this._syncCaption();
+      if (!this._captionCues?.length) this._sendCaption(text);
     });
+  }
+
+  _visibleCaptionText(root) {
+    const win = this.contentWindow;
+    if (!win || !root) return "";
+    const pieces = [];
+    const visit = (node) => {
+      if (node.nodeType === 3) {
+        pieces.push(node.nodeValue || "");
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      if (node.getAttribute("aria-hidden") === "true") return;
+      const style = win.getComputedStyle(node);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse" ||
+        Number.parseFloat(style.opacity) === 0
+      ) {
+        return;
+      }
+      for (const child of node.childNodes) visit(child);
+    };
+    visit(root);
+    return pieces.join("").replace(/\s+/g, " ").trim();
   }
 
   _syncCaption() {
     if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
-      return;
+      this._captionText = "";
+      return "";
     }
 
     const doc = this.contentWindow?.document;
-    if (!doc) return;
+    if (!doc) return this._captionText;
     const ccButton = doc.querySelector(".ytp-subtitles-button");
     const captionsEnabled =
       !ccButton ||
@@ -278,26 +317,392 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       const parts = [];
       for (const segment of doc.querySelectorAll(".ytp-caption-segment")) {
         const windowEl = segment.closest(".caption-window");
-        const style = this.contentWindow.getComputedStyle(segment);
         const windowStyle = windowEl
           ? this.contentWindow.getComputedStyle(windowEl)
           : null;
         if (
-          style.display === "none" ||
-          style.visibility === "hidden" ||
-          style.opacity === "0" ||
           windowStyle?.display === "none" ||
           windowStyle?.visibility === "hidden" ||
           windowStyle?.opacity === "0"
         ) {
           continue;
         }
-        const value = (segment.textContent || "").replace(/\s+/g, " ").trim();
+        // YouTube sometimes inserts a complete automatic-caption cue and
+        // reveals its descendants word by word. Reading only visible text
+        // keeps those rolling words incremental instead of exposing the full
+        // cue early.
+        const value = this._visibleCaptionText(segment);
         if (value) parts.push(value);
       }
       text = parts.join(" ").replace(/\s+/g, " ").trim();
     }
 
+    this._captionText = text;
+    return text;
+  }
+
+  _extractJSONAt(text, start) {
+    const objectStart = text.indexOf("{", start);
+    if (objectStart < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = objectStart; i < text.length; i++) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === "{") depth++;
+      else if (char === "}" && --depth === 0) {
+        try {
+          return JSON.parse(text.slice(objectStart, i + 1));
+        } catch (_) {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  _getInlinePlayerResponse(doc) {
+    const marker = "ytInitialPlayerResponse";
+    for (const script of doc?.scripts || []) {
+      const text = script.textContent || "";
+      let offset = 0;
+      while ((offset = text.indexOf(marker, offset)) >= 0) {
+        const response = this._extractJSONAt(text, offset + marker.length);
+        if (response?.captions?.playerCaptionsTracklistRenderer
+          ?.captionTracks?.length) {
+          return response;
+        }
+        offset += marker.length;
+      }
+    }
+    return null;
+  }
+
+  _getCaptionTrackInfo() {
+    const win = this.contentWindow;
+    const doc = win?.document;
+    if (!win || !doc) return null;
+
+    try {
+      // Prefer the exact caption request YouTube's player made. It can contain
+      // session-bound proof tokens that are absent from the public track URL
+      // in ytInitialPlayerResponse. Resource timing keeps the request URL even
+      // after YouTube has consumed its response.
+      const resources = win.performance?.getEntriesByType?.("resource") || [];
+      const pageUrl = new win.URL(win.location.href);
+      const currentVideoId = pageUrl.searchParams.get("v") ||
+        /^\/(?:shorts|embed|live)\/([^/?]+)/.exec(pageUrl.pathname)?.[1] ||
+        "";
+      for (let i = resources.length - 1; i >= 0; i--) {
+        try {
+          const url = new win.URL(resources[i].name);
+          if (url.hostname.endsWith("youtube.com") &&
+              url.pathname.endsWith("/api/timedtext")) {
+            const resourceVideoId = url.searchParams.get("v") || "";
+            if (currentVideoId && resourceVideoId &&
+                resourceVideoId !== currentVideoId) {
+              continue;
+            }
+            const baseUrl = url.href;
+            return {
+              baseUrl,
+              translationCode: "",
+              key: `loaded|${baseUrl}`,
+            };
+          }
+        } catch (_) {}
+      }
+
+      const pageWindow = win.wrappedJSObject || win;
+      const playerElement = doc.querySelector("#movie_player, .html5-video-player");
+      const player = playerElement?.wrappedJSObject || playerElement;
+      let playerResponse = null;
+      try {
+        playerResponse = player?.getPlayerResponse?.() || null;
+      } catch (_) {}
+      let globalResponse = null;
+      try {
+        globalResponse = pageWindow.ytInitialPlayerResponse || null;
+      } catch (_) {}
+      const responses = [
+        playerResponse,
+        globalResponse,
+        this._getInlinePlayerResponse(doc),
+      ];
+      const response = responses.find(candidate =>
+        candidate?.captions?.playerCaptionsTracklistRenderer
+          ?.captionTracks?.length,
+      );
+      const renderer = response?.captions?.playerCaptionsTracklistRenderer;
+      const tracks = Array.from(renderer?.captionTracks || []);
+      if (!tracks.length) return null;
+
+      let selected = null;
+      let current = null;
+      try {
+        current = player?.getOption?.("captions", "track") || null;
+      } catch (_) {}
+
+      if (current) {
+        selected = tracks.find(track =>
+          current.vssId && track.vssId === current.vssId,
+        ) || tracks.find(track =>
+          current.languageCode &&
+          track.languageCode === current.languageCode &&
+          (!current.kind || track.kind === current.kind),
+        );
+      }
+
+      if (!selected) {
+        const audioIndex = Number(renderer.defaultAudioTrackIndex) || 0;
+        const captionIndex = Number(
+          renderer.audioTracks?.[audioIndex]?.defaultCaptionTrackIndex,
+        );
+        if (Number.isInteger(captionIndex)) selected = tracks[captionIndex];
+      }
+      selected ||= tracks[0];
+
+      const baseUrl = String(selected?.baseUrl || "");
+      if (!baseUrl) return null;
+      const translationCode = String(
+        current?.translationLanguage?.languageCode ||
+        current?.translationLanguage?.id ||
+        "",
+      );
+      const key = [baseUrl, translationCode].join("|");
+      return { baseUrl, translationCode, key };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _parseCaptionJSON3(data) {
+    if (!Array.isArray(data?.events)) return [];
+    const cues = [];
+    for (const event of data.events) {
+      if (!Array.isArray(event?.segs)) continue;
+      const startMs = Number(event.tStartMs);
+      if (!Number.isFinite(startMs)) continue;
+      const durationMs = Number(event.dDurationMs);
+      const endMs = startMs +
+        (Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 3000);
+      const segments = event.segs
+        .map(segment => {
+          const text = String(segment?.utf8 || "");
+          const offsetMs = Number(segment?.tOffsetMs);
+          return {
+            text,
+            startMs: startMs +
+              (Number.isFinite(offsetMs) && offsetMs > 0 ? offsetMs : 0),
+          };
+        })
+        .filter(segment => segment.text && segment.text !== "\n");
+      if (!segments.length) continue;
+      cues.push({
+        startMs,
+        endMs,
+        segments,
+        windowId: event.wWinId,
+        append: Boolean(event.aAppend),
+      });
+    }
+    return this._finalizeCaptionCues(cues);
+  }
+
+  _parseCaptionXML(text) {
+    if (!text) return [];
+    const parser = new this.contentWindow.DOMParser();
+    const doc = parser.parseFromString(text, "text/xml");
+    if (doc.querySelector("parsererror")) return [];
+    const cues = [];
+
+    for (const paragraph of doc.querySelectorAll("p")) {
+      const startValue = paragraph.getAttribute("t");
+      if (startValue === null) continue;
+      const startMs = Number(startValue);
+      if (!Number.isFinite(startMs)) continue;
+      const durationMs = Number(paragraph.getAttribute("d"));
+      const segments = Array.from(paragraph.querySelectorAll(":scope > s"))
+        .map(segment => ({
+          text: segment.textContent || "",
+          startMs: startMs + (Number(segment.getAttribute("t")) || 0),
+        }))
+        .filter(segment => segment.text && segment.text !== "\n");
+      if (!segments.length && paragraph.textContent) {
+        segments.push({ text: paragraph.textContent, startMs });
+      }
+      if (!segments.length) continue;
+      cues.push({
+        startMs,
+        endMs: startMs +
+          (Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 3000),
+        segments,
+        windowId: paragraph.getAttribute("w") || undefined,
+        append: paragraph.getAttribute("a") === "1",
+      });
+    }
+
+    for (const node of doc.querySelectorAll("transcript > text")) {
+      const startValue = node.getAttribute("start");
+      if (startValue === null) continue;
+      const startSeconds = Number(startValue);
+      if (!Number.isFinite(startSeconds)) continue;
+      const durationSeconds = Number(node.getAttribute("dur"));
+      const startMs = startSeconds * 1000;
+      const value = node.textContent || "";
+      if (!value.trim()) continue;
+      cues.push({
+        startMs,
+        endMs: startMs +
+          (Number.isFinite(durationSeconds) && durationSeconds > 0
+            ? durationSeconds * 1000
+            : 3000),
+        segments: [{ text: value, startMs }],
+        windowId: undefined,
+        append: false,
+      });
+    }
+    return this._finalizeCaptionCues(cues);
+  }
+
+  _finalizeCaptionCues(cues) {
+    cues.sort((a, b) => a.startMs - b.startMs);
+    let maxEndThrough = -Infinity;
+    for (const cue of cues) {
+      maxEndThrough = Math.max(maxEndThrough, cue.endMs);
+      cue.maxEndThrough = maxEndThrough;
+    }
+    return cues;
+  }
+
+  async _ensureCaptionTrack() {
+    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+      return;
+    }
+    const now = this.contentWindow?.performance?.now?.() ?? Date.now();
+    if (now < this._captionTrackCheckAt) return;
+    this._captionTrackCheckAt = now + CAPTION_TRACK_CHECK_MS;
+
+    const track = this._getCaptionTrackInfo();
+    if (!track) return;
+    if (track.key === this._captionTrackKey && this._captionCues) return;
+    if (track.key === this._captionLoadPendingKey) return;
+
+    const serial = ++this._captionLoadSerial;
+    this._captionTrackKey = track.key;
+    this._captionLoadPendingKey = track.key;
+    this._captionCues = null;
+    const video = this._video;
+    try {
+      const url = new this.contentWindow.URL(track.baseUrl);
+      if (!url.hostname.endsWith("youtube.com") &&
+          !url.hostname.endsWith("youtube-nocookie.com")) {
+        throw new Error("Unexpected caption host");
+      }
+      if (track.translationCode) {
+        url.searchParams.set("tlang", track.translationCode);
+      }
+      let cues = [];
+      for (const format of ["json3", "srv3", ""]) {
+        if (format) url.searchParams.set("fmt", format);
+        else url.searchParams.delete("fmt");
+        const response = await this.contentWindow.fetch(url.href, {
+          credentials: "include",
+        });
+        if (!response.ok) continue;
+        const body = await response.text();
+        if (!body) continue;
+        if (format === "json3") {
+          try {
+            cues = this._parseCaptionJSON3(JSON.parse(body));
+          } catch (_) {
+            cues = [];
+          }
+        } else {
+          cues = this._parseCaptionXML(body);
+        }
+        if (cues.length) break;
+      }
+      if (!cues.length) throw new Error("Caption track contained no cues");
+      if (serial !== this._captionLoadSerial || video !== this._video) return;
+      this._captionLoadPendingKey = "";
+      this._captionCues = cues;
+      this._updateCaptionFromClock();
+    } catch (error) {
+      if (serial !== this._captionLoadSerial) return;
+      this._captionLoadPendingKey = "";
+      this._captionTrackKey = "";
+      this._captionCues = null;
+      this._debug("[Zenslop/content] caption track load failed:", error);
+    }
+  }
+
+  _timedCaptionAt(timeMs) {
+    const cues = this._captionCues;
+    if (!cues?.length) return "";
+
+    // Find the last cue that has started, then walk backward only while some
+    // earlier cue can still be active. The prefix maximum handles unusually
+    // long manual cues without scanning the full transcript on every tick.
+    let low = 0;
+    let high = cues.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (cues[mid].startMs <= timeMs) low = mid + 1;
+      else high = mid;
+    }
+
+    const active = [];
+    for (let i = low - 1; i >= 0; i--) {
+      const cue = cues[i];
+      if (cue.maxEndThrough <= timeMs) break;
+      if (timeMs < cue.endMs) active.push([i, cue]);
+    }
+    active.reverse();
+
+    const windows = new Map();
+    for (const [i, cue] of active) {
+      const text = cue.segments
+        .filter(segment => segment.startMs <= timeMs + 25)
+        .map(segment => segment.text)
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!text) continue;
+      const windowKey = cue.windowId ?? `cue-${i}`;
+      const previous = windows.get(windowKey) || "";
+      windows.set(
+        windowKey,
+        cue.append && previous ? `${previous} ${text}` : text,
+      );
+    }
+    return Array.from(windows.values()).join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  _updateCaptionFromClock() {
+    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+      return;
+    }
+    this._ensureCaptionTrack();
+    const doc = this.contentWindow?.document;
+    const ccButton = doc?.querySelector(".ytp-subtitles-button");
+    const captionsEnabled =
+      !ccButton ||
+      ccButton.getAttribute("aria-pressed") === "true" ||
+      ccButton.classList.contains("ytp-button-active");
+    let text = "";
+    if (captionsEnabled) {
+      text = this._captionCues
+        ? this._timedCaptionAt(this._video.currentTime * 1000)
+        : this._syncCaption();
+    }
     this._sendCaption(text);
   }
 
@@ -320,6 +725,14 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     this._captionRoot = null;
     this._ccButtonObserver = null;
     this._captionSyncQueued = false;
+    this._captionText = "";
+    if (clear) {
+      this._captionLoadSerial++;
+      this._captionCues = null;
+      this._captionTrackKey = "";
+      this._captionTrackCheckAt = 0;
+      this._captionLoadPendingKey = "";
+    }
     if (clear) this._sendCaption("");
   }
 
@@ -442,6 +855,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       // source tab is backgrounded, so hidden is the state we capture in.
       // Visibility gating is controlled by the chrome-window controller.
       this._captureFrame(msg.data?.quality);
+      return;
+    }
+    if (msg.name === "ZenPiP:CaptionTick") {
+      this._updateCaptionFromClock();
       return;
     }
     if (msg.name === "ZenPiP:Stop") {
