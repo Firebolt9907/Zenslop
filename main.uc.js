@@ -76,6 +76,7 @@
       background: transparent;
       display: none;
       border-radius: var(--zen-border-radius);
+      clip-path: inset(0 round var(--zen-border-radius));
       overflow: hidden;
       contain: strict;
       z-index: 10;
@@ -88,8 +89,9 @@
       content: "";
       position: absolute;
       inset: 0;
+      box-sizing: border-box;
+      border: 1px solid color-mix(in srgb, white 8%, transparent);
       border-radius: inherit;
-      box-shadow: inset 0 0 0 1px color-mix(in srgb, white 8%, transparent);
       z-index: 1;
       pointer-events: none;
     }
@@ -100,6 +102,8 @@
       max-height: 100%;
       min-width: 0;
       min-height: 0;
+      border-radius: inherit;
+      clip-path: inherit;
       object-fit: contain;
       display: block;
     }
