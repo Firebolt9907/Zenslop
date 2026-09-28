@@ -100,10 +100,15 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
       }
 
       case "ZenPiP:VideoStopped": {
-        console.log("[Zenslop/parent] VideoStopped reason:", msg.data?.reason);
+        const reason = msg.data?.reason || "";
+        console.log("[Zenslop/parent] VideoStopped reason:", reason);
         const controller = win.ZenPiPController;
         if (controller) {
-          controller.setCaption?.("");
+          if (reason.includes("pause")) {
+            controller.hideCaption?.();
+          } else {
+            controller.setCaption?.("");
+          }
           controller.unregisterSource(this.browsingContext.id);
           controller.notifySourceStopped(this.browsingContext);
         }

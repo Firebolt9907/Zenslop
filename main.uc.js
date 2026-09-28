@@ -497,6 +497,22 @@
     }
   }
 
+  function hideCaptionNow() {
+    clearCaptionTimers();
+    if (!captionText) {
+      captionContainer.removeAttribute("zenslop-caption-visible");
+      return;
+    }
+    captionContainer.removeAttribute("zenslop-caption-visible");
+    captionExitTimer = setTimeout(() => {
+      captionExitTimer = null;
+      captionText = "";
+      captionContainer.textContent = "";
+      lastTop = lastLeft = lastWidth = -1;
+      if (isStreaming) bump();
+    }, CONFIG.CAPTION_ANIM_MS);
+  }
+
   function hideCaptionAfterGap() {
     if (!captionText || captionHideTimer || captionExitTimer) return;
     captionHideTimer = setTimeout(() => {
@@ -791,6 +807,9 @@
       } else {
         hideCaptionAfterGap();
       }
+    },
+    hideCaption() {
+      hideCaptionNow();
     },
     setSourceTabActive(active) {
       if (sourceTabActive === active) return;
