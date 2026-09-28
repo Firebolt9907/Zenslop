@@ -101,7 +101,7 @@
       max-height: 100%;
       min-width: 0;
       min-height: 0;
-      border-radius: calc(var(--zen-border-radius) + 1px);
+      border-radius: calc(var(--zen-border-radius) + 4px);
       object-fit: fill;
       display: block;
     }
