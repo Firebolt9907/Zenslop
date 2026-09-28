@@ -298,6 +298,41 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     return pieces.join("").replace(/\s+/g, " ").trim();
   }
 
+  _joinDistinctCaptionWindows(values) {
+    const seen = new Set();
+    const distinct = [];
+    for (const value of values) {
+      const normalized = String(value || "").replace(/\s+/g, " ").trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      distinct.push(normalized);
+    }
+    return distinct.join(" ");
+  }
+
+  _appendCaptionText(previous, next) {
+    previous = String(previous || "").replace(/\s+/g, " ").trim();
+    next = String(next || "").replace(/\s+/g, " ").trim();
+    if (!previous) return next;
+    if (!next || previous === next || previous.endsWith(` ${next}`)) {
+      return previous;
+    }
+    if (next.startsWith(`${previous} `)) return next;
+
+    const previousWords = previous.split(" ");
+    const nextWords = next.split(" ");
+    const maxOverlap = Math.min(previousWords.length, nextWords.length);
+    for (let count = maxOverlap; count >= 2; count--) {
+      if (
+        previousWords.slice(-count).join(" ") ===
+        nextWords.slice(0, count).join(" ")
+      ) {
+        return previousWords.concat(nextWords.slice(count)).join(" ");
+      }
+    }
+    return `${previous} ${next}`;
+  }
+
   _syncCaption() {
     if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
       this._captionText = "";
@@ -314,7 +349,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
     let text = "";
     if (captionsEnabled) {
-      const parts = [];
+      const windowParts = new Map();
       for (const segment of doc.querySelectorAll(".ytp-caption-segment")) {
         const windowEl = segment.closest(".caption-window");
         const windowStyle = windowEl
@@ -332,9 +367,15 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         // keeps those rolling words incremental instead of exposing the full
         // cue early.
         const value = this._visibleCaptionText(segment);
-        if (value) parts.push(value);
+        if (!value) continue;
+        const windowKey = windowEl || segment;
+        const parts = windowParts.get(windowKey) || [];
+        parts.push(value);
+        windowParts.set(windowKey, parts);
       }
-      text = parts.join(" ").replace(/\s+/g, " ").trim();
+      text = this._joinDistinctCaptionWindows(
+        Array.from(windowParts.values(), parts => parts.join(" ")),
+      );
     }
 
     this._captionText = text;
@@ -680,10 +721,12 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       const previous = windows.get(windowKey) || "";
       windows.set(
         windowKey,
-        cue.append && previous ? `${previous} ${text}` : text,
+        cue.append && previous
+          ? this._appendCaptionText(previous, text)
+          : text,
       );
     }
-    return Array.from(windows.values()).join(" ").replace(/\s+/g, " ").trim();
+    return this._joinDistinctCaptionWindows(windows.values());
   }
 
   _updateCaptionFromClock() {
