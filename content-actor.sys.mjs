@@ -6,6 +6,8 @@ const DEBUG = false;
 export class ZenSidebarPiPChild extends JSWindowActorChild {
   actorCreated() {
     this._processingActive = false;
+    this._captionsActive = false;
+    this._captionMode = "off";
     this._lastCaptionText = "";
     this._captionText = "";
     this._captionCues = null;
@@ -169,7 +171,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       this.sendAsyncMessage("ZenPiP:SourceVisibility", { hidden: doc.hidden });
     }
 
-    if (this._processingActive) this._startCaptionTracking();
+    if (this._captionsActive) this._startCaptionTracking();
   }
 
   _isYouTubeDocument() {
@@ -187,7 +189,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _startCaptionTracking() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       return;
     }
     if (this._captionRootObserver) {
@@ -261,7 +264,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _queueCaptionSync() {
-    if (this._captionSyncQueued || !this._processingActive) return;
+    if (this._captionSyncQueued || !this._captionsActive) return;
     const win = this.contentWindow;
     if (!win) return;
     this._captionSyncQueued = true;
@@ -298,23 +301,75 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     return pieces.join("").replace(/\s+/g, " ").trim();
   }
 
+  _joinDistinctCaptionWindows(values) {
+    const seen = new Set();
+    const distinct = [];
+    for (const value of values) {
+      const normalized = String(value || "").replace(/\s+/g, " ").trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      distinct.push(normalized);
+    }
+    return distinct.join(" ");
+  }
+
+  _sourceCaptionsEnabled() {
+    if (this._captionMode === "on") return true;
+    if (this._captionMode !== "youtube") return false;
+
+    const doc = this.contentWindow?.document;
+    const ccButton = doc?.querySelector(".ytp-subtitles-button");
+    if (ccButton) {
+      return (
+        ccButton.getAttribute("aria-pressed") === "true" ||
+        ccButton.classList.contains("ytp-button-active")
+      );
+    }
+
+    try {
+      const player = doc?.querySelector(".html5-video-player");
+      const track = player?.getOption?.("captions", "track");
+      return Boolean(track?.languageCode);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  _appendCaptionText(previous, next) {
+    previous = String(previous || "").replace(/\s+/g, " ").trim();
+    next = String(next || "").replace(/\s+/g, " ").trim();
+    if (!previous) return next;
+    if (!next || previous === next || previous.endsWith(` ${next}`)) {
+      return previous;
+    }
+    if (next.startsWith(`${previous} `)) return next;
+
+    const previousWords = previous.split(" ");
+    const nextWords = next.split(" ");
+    const maxOverlap = Math.min(previousWords.length, nextWords.length);
+    for (let count = maxOverlap; count >= 2; count--) {
+      if (
+        previousWords.slice(-count).join(" ") ===
+        nextWords.slice(0, count).join(" ")
+      ) {
+        return previousWords.concat(nextWords.slice(count)).join(" ");
+      }
+    }
+    return `${previous} ${next}`;
+  }
+
   _syncCaption() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       this._captionText = "";
       return "";
     }
 
     const doc = this.contentWindow?.document;
     if (!doc) return this._captionText;
-    const ccButton = doc.querySelector(".ytp-subtitles-button");
-    const captionsEnabled =
-      !ccButton ||
-      ccButton.getAttribute("aria-pressed") === "true" ||
-      ccButton.classList.contains("ytp-button-active");
-
     let text = "";
-    if (captionsEnabled) {
-      const parts = [];
+    if (this._sourceCaptionsEnabled()) {
+      const windowParts = new Map();
       for (const segment of doc.querySelectorAll(".ytp-caption-segment")) {
         const windowEl = segment.closest(".caption-window");
         const windowStyle = windowEl
@@ -332,9 +387,15 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
         // keeps those rolling words incremental instead of exposing the full
         // cue early.
         const value = this._visibleCaptionText(segment);
-        if (value) parts.push(value);
+        if (!value) continue;
+        const windowKey = windowEl || segment;
+        const parts = windowParts.get(windowKey) || [];
+        parts.push(value);
+        windowParts.set(windowKey, parts);
       }
-      text = parts.join(" ").replace(/\s+/g, " ").trim();
+      text = this._joinDistinctCaptionWindows(
+        Array.from(windowParts.values(), parts => parts.join(" ")),
+      );
     }
 
     this._captionText = text;
@@ -583,7 +644,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async _ensureCaptionTrack() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       return;
     }
     const now = this.contentWindow?.performance?.now?.() ?? Date.now();
@@ -680,25 +742,22 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       const previous = windows.get(windowKey) || "";
       windows.set(
         windowKey,
-        cue.append && previous ? `${previous} ${text}` : text,
+        cue.append && previous
+          ? this._appendCaptionText(previous, text)
+          : text,
       );
     }
-    return Array.from(windows.values()).join(" ").replace(/\s+/g, " ").trim();
+    return this._joinDistinctCaptionWindows(windows.values());
   }
 
   _updateCaptionFromClock() {
-    if (!this._video || !this._processingActive || !this._isYouTubeDocument()) {
+    if (!this._video || !this._captionsActive || this._captionMode === "off" ||
+        !this._isYouTubeDocument()) {
       return;
     }
     this._ensureCaptionTrack();
-    const doc = this.contentWindow?.document;
-    const ccButton = doc?.querySelector(".ytp-subtitles-button");
-    const captionsEnabled =
-      !ccButton ||
-      ccButton.getAttribute("aria-pressed") === "true" ||
-      ccButton.classList.contains("ytp-button-active");
     let text = "";
-    if (captionsEnabled) {
+    if (this._sourceCaptionsEnabled()) {
       text = this._captionCues
         ? this._timedCaptionAt(this._video.currentTime * 1000)
         : this._syncCaption();
@@ -736,14 +795,26 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (clear) this._sendCaption("");
   }
 
-  _setProcessingActive(active) {
+  _setProcessingActive(
+    active,
+    captionMode = "off",
+    captionsActive = active,
+  ) {
     active = Boolean(active);
-    if (this._processingActive === active) return;
+    captionMode = captionMode === "on" || captionMode === "youtube"
+      ? captionMode
+      : "off";
+    captionsActive = Boolean(captionsActive) && captionMode !== "off";
+    if (this._processingActive === active &&
+        this._captionMode === captionMode &&
+        this._captionsActive === captionsActive) return;
     this._processingActive = active;
-    if (active) {
+    this._captionMode = captionMode;
+    this._captionsActive = captionsActive;
+    if (captionsActive) {
       this._startCaptionTracking();
     } else {
-      this._stopCaptionTracking(false);
+      this._stopCaptionTracking(captionMode === "off");
     }
   }
 
@@ -866,7 +937,11 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       return;
     }
     if (msg.name === "ZenPiP:SetProcessingState") {
-      this._setProcessingActive(msg.data?.active);
+      this._setProcessingActive(
+        msg.data?.active,
+        msg.data?.captionMode,
+        msg.data?.captionsActive,
+      );
     }
   }
 

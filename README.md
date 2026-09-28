@@ -80,6 +80,11 @@ while substantially reducing cross-process pixel traffic.
 | Mute the source video | Mirror hides (mute is treated as the "this is an ad" signal). |
 | Pause / close the source tab | Mirror animates out and the stream is released. |
 
+The **Captions** mod setting follows the caption state in the YouTube player by
+default. It can also keep captions always on or turn them off entirely.
+Enable **Show Captions When PiP Is Hidden** to keep the caption panel visible
+when the sidebar PiP eye toggle is off.
+
 <!-- TOGGLE SCREENSHOT — close-up of the media controls with the eye-toggle button highlighted -->
 <p align="center">
   <img src="docs/toggle-button.png" alt="Eye-toggle button injected into the sidebar media controls" width="300">

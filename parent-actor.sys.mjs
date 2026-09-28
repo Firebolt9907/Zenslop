@@ -43,8 +43,8 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
           controller.registerSource(this.browsingContext.id, {
             startTick: (w) => { this._startTicking(w); },
             stopTick: () => { this._stopTicking(); },
-            setProcessingActive: (active) => {
-              this._setProcessingActive(active);
+            setProcessingActive: (active, captionMode, captionsActive) => {
+              this._setProcessingActive(active, captionMode, captionsActive);
             },
             setMaxDimension: (maxDimension) => {
               this._setMaxDimension(maxDimension);
@@ -91,6 +91,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
       }
 
       case "ZenPiP:Caption": {
+        if (this._captionMode === "off") break;
         const controller = win.ZenPiPController;
         const activeBC = controller?.getActiveBC?.();
         if (activeBC && activeBC.id === this.browsingContext.id) {
@@ -131,17 +132,29 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._lastTickSentAt = 0;
     this._consecutiveSlow = 0;
     this._consecutiveFast = 0;
-    this._startCaptionClock();
+    if (this._captionsActive) this._startCaptionClock();
     this._sendTick();
     dlog("[Zenslop/parent] Ticking started (self-clocking)");
   }
 
-  _setProcessingActive(active) {
+  _setProcessingActive(active, captionMode = "off", captionsActive = active) {
+    this._captionMode = captionMode === "on" || captionMode === "youtube"
+      ? captionMode
+      : "off";
+    this._captionsActive = Boolean(captionsActive) &&
+      this._captionMode !== "off";
     try {
       this.sendAsyncMessage("ZenPiP:SetProcessingState", {
         active: Boolean(active),
+        captionMode: this._captionMode,
+        captionsActive: this._captionsActive,
       });
     } catch (_) {}
+    if (this._captionsActive) {
+      this._startCaptionClock();
+    } else {
+      this._stopCaptionClock();
+    }
   }
 
   _setMaxDimension(maxDimension) {
@@ -250,7 +263,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     const win = this._timerWindow || this.browsingContext?.topChromeWindow;
     if (!win || this._captionTimer) return;
     const tick = () => {
-      if (!this._tickScheduled) return;
+      if (!this._captionsActive) return;
       try {
         this.sendAsyncMessage("ZenPiP:CaptionTick", {});
       } catch (_) {}
@@ -298,7 +311,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     this._tickScheduled = false;
     this._clearNextTick();
     this._clearSafetyTimeout();
-    this._stopCaptionClock();
+    if (!this._captionsActive) this._stopCaptionClock();
     this._timerWindow = null;
   }
 
