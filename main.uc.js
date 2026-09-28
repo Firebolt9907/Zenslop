@@ -23,7 +23,6 @@
   const CONFIG = Object.freeze({
     GAP: 6,
     TAB_LIST_GAP: 6,
-    PIP_BORDER_WIDTH: 1,
     ANIM_MS: 220,
     LAYOUT_ANIM_MS: 180,
     CAPTION_ANIM_MS: 180,
@@ -76,8 +75,6 @@
       position: fixed;
       background: transparent;
       display: none;
-      box-sizing: border-box;
-      border: ${CONFIG.PIP_BORDER_WIDTH}px solid transparent;
       border-radius: var(--zen-border-radius);
       overflow: hidden;
       contain: strict;
@@ -90,7 +87,7 @@
     #zen-sidebar-pip-container::after {
       content: "";
       position: absolute;
-      inset: -${CONFIG.PIP_BORDER_WIDTH}px;
+      inset: 0;
       box-sizing: border-box;
       border: 1px solid color-mix(in srgb, white 8%, transparent);
       border-radius: inherit;
@@ -398,16 +395,15 @@
         }
 
         const availableHeight = Math.max(2, videoBottom);
-        const borderSize = CONFIG.PIP_BORDER_WIDTH * 2;
         let width = playerWidth;
-        let height = (width - borderSize) / videoAspect + borderSize;
+        let height = width / videoAspect;
         const effectiveMaxHeight = Math.max(
           2,
           Math.min(playerWidth, availableHeight),
         );
         if (height > effectiveMaxHeight) {
           height = effectiveMaxHeight;
-          width = (height - borderSize) * videoAspect + borderSize;
+          width = height * videoAspect;
         }
         const adjustedLeft = left + (playerWidth - width) / 2;
 
