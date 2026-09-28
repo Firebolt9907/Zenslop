@@ -76,8 +76,7 @@
       background: transparent;
       display: none;
       border-radius: var(--zen-border-radius);
-      clip-path: inset(0 round var(--zen-border-radius));
-      overflow: hidden;
+      overflow: visible;
       contain: strict;
       z-index: 10;
       pointer-events: none;
@@ -103,7 +102,6 @@
       min-width: 0;
       min-height: 0;
       border-radius: inherit;
-      clip-path: inherit;
       object-fit: contain;
       display: block;
     }
