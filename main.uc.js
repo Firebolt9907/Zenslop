@@ -25,6 +25,8 @@
     TAB_LIST_CLEARANCE: 32,
     ANIM_MS: 220,
     LAYOUT_ANIM_MS: 180,
+    CAPTION_ANIM_MS: 180,
+    CAPTION_GAP_GRACE_MS: 1000,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
     // A downward move of the player's top edge larger than this (px) is only
@@ -110,8 +112,17 @@
       overflow: hidden;
       z-index: 11;
       pointer-events: none;
-      transition: opacity ${CONFIG.ANIM_MS}ms ease,
+      opacity: 0;
+      transform: translateY(4px) scale(0.96);
+      transform-origin: 50% 100%;
+      transition: opacity ${CONFIG.CAPTION_ANIM_MS}ms ease,
+                  transform ${CONFIG.CAPTION_ANIM_MS}ms ease,
                   top ${CONFIG.LAYOUT_ANIM_MS}ms ease-out;
+      will-change: opacity, transform, top;
+    }
+    #zen-sidebar-pip-caption[zenslop-caption-visible="true"] {
+      opacity: var(--zenslop-caption-opacity, 1);
+      transform: translateY(0) scale(1);
     }
     [zenslop-tab-padding="true"] {
       box-sizing: border-box !important;
@@ -175,6 +186,8 @@
   let animateOutTimer = null;
   let videoAspect = CONFIG.DEFAULT_ASPECT;
   let captionText = "";
+  let captionHideTimer = null;
+  let captionExitTimer = null;
   let browserWindowActive = true;
   let captureMaxDimension = -1;
 
@@ -292,7 +305,10 @@
       const op = userHidden ? 0 : opacity;
       if (op !== lastOpacity) {
         pipContainer.style.opacity = String(op);
-        captionContainer.style.opacity = String(op);
+        captionContainer.style.setProperty(
+          "--zenslop-caption-opacity",
+          String(op),
+        );
         lastOpacity = op;
       }
     }
@@ -437,6 +453,63 @@
   function bump() {
     activeUntil = performance.now() + CONFIG.ANIM_TAIL_MS;
     schedule();
+  }
+
+  function clearCaptionTimers() {
+    if (captionHideTimer) {
+      clearTimeout(captionHideTimer);
+      captionHideTimer = null;
+    }
+    if (captionExitTimer) {
+      clearTimeout(captionExitTimer);
+      captionExitTimer = null;
+    }
+  }
+
+  function clearCaptionImmediately() {
+    clearCaptionTimers();
+    captionContainer.removeAttribute("zenslop-caption-visible");
+    captionContainer.textContent = "";
+    captionContainer.style.display = "none";
+    captionText = "";
+    lastTop = lastLeft = lastWidth = -1;
+  }
+
+  function showCaption(next) {
+    const wasEmpty = !captionText;
+    clearCaptionTimers();
+    captionText = next;
+    captionContainer.textContent = next;
+    lastTop = lastLeft = lastWidth = -1;
+    if (isStreaming) bump();
+
+    if (wasEmpty) {
+      captionContainer.removeAttribute("zenslop-caption-visible");
+      requestAnimationFrame(() => {
+        if (!captionText) return;
+        // syncPosition has now made the caption measurable and positioned it.
+        // Flush that hidden state so the following attribute change transitions.
+        void captionContainer.getBoundingClientRect();
+        captionContainer.setAttribute("zenslop-caption-visible", "true");
+      });
+    } else {
+      captionContainer.setAttribute("zenslop-caption-visible", "true");
+    }
+  }
+
+  function hideCaptionAfterGap() {
+    if (!captionText || captionHideTimer || captionExitTimer) return;
+    captionHideTimer = setTimeout(() => {
+      captionHideTimer = null;
+      captionContainer.removeAttribute("zenslop-caption-visible");
+      captionExitTimer = setTimeout(() => {
+        captionExitTimer = null;
+        captionText = "";
+        captionContainer.textContent = "";
+        lastTop = lastLeft = lastWidth = -1;
+        if (isStreaming) bump();
+      }, CONFIG.CAPTION_ANIM_MS);
+    }, CONFIG.CAPTION_GAP_GRACE_MS);
   }
 
   function startTracking() {
@@ -712,11 +785,12 @@
     },
     setCaption(text) {
       const next = String(text || "").replace(/\s+/g, " ").trim().slice(0, 1000);
-      if (next === captionText) return;
-      captionText = next;
-      captionContainer.textContent = next;
-      lastTop = lastLeft = lastWidth = -1;
-      if (isStreaming) bump();
+      if (next) {
+        if (next === captionText && !captionHideTimer && !captionExitTimer) return;
+        showCaption(next);
+      } else {
+        hideCaptionAfterGap();
+      }
     },
     setSourceTabActive(active) {
       if (sourceTabActive === active) return;
@@ -798,7 +872,7 @@
       const nextSourceBC = browsingContext || null;
       const sourceChanged =
         previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
-      if (sourceChanged) this.setCaption("");
+      if (sourceChanged) clearCaptionImmediately();
       sourceBC = nextSourceBC;
 
       if (sourceBC) {
@@ -886,7 +960,7 @@
         animateOutTimer = null;
         animating = false;
         safe(() => canvasCtx.clearRect(0, 0, canvasEl.width, canvasEl.height));
-        this.setCaption("");
+        clearCaptionImmediately();
         sourceBC = null;
         s.display = "none";
         s.transition = "";
