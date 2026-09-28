@@ -75,6 +75,8 @@
       position: fixed;
       background: transparent;
       display: none;
+      box-sizing: border-box;
+      border: 1px solid color-mix(in srgb, white 8%, transparent);
       border-radius: var(--zen-border-radius);
       overflow: hidden;
       contain: strict;
@@ -101,7 +103,7 @@
       padding: 7px 10px;
       color: white;
       background: color-mix(in srgb, black 78%, transparent);
-      border: 1px solid color-mix(in srgb, white 14%, transparent);
+      border: 1px solid color-mix(in srgb, white 8%, transparent);
       border-radius: var(--zen-border-radius);
       box-shadow: 0 3px 12px rgb(0 0 0 / 28%);
       font: 600 12px/1.35 system-ui, sans-serif;
@@ -124,9 +126,12 @@
       opacity: var(--zenslop-caption-opacity, 1);
       transform: translateY(0) scale(1);
     }
-    [zenslop-tab-padding="true"] {
+    [zenslop-tab-list-sized="true"] {
       box-sizing: border-box !important;
-      padding-bottom: var(--zenslop-tab-list-padding, 0px) !important;
+      min-height: 0 !important;
+      height: var(--zenslop-tab-list-height) !important;
+      max-height: var(--zenslop-tab-list-height) !important;
+      flex: 0 1 var(--zenslop-tab-list-height) !important;
     }
     .zen-sidebar-pip-toggle {
       flex: 0 0 auto;
@@ -208,32 +213,30 @@
     }
   }
 
-  let lastTabPad = -1;
-  let paddedTabList = null;
-  function getTabPaddingTarget() {
-    if (paddedTabList?.isConnected) return paddedTabList;
+  let lastTabListHeight = -1;
+  let sizedTabList = null;
+  function getTabListTarget() {
+    if (sizedTabList?.isConnected) return sizedTabList;
     return document.querySelector(TAB_LIST_SELECTORS);
   }
-  function clearTabListPadding() {
-    if (paddedTabList?.isConnected) {
-      paddedTabList.removeAttribute("zenslop-tab-padding");
-      paddedTabList.style.removeProperty("--zenslop-tab-list-padding");
+  function clearTabListHeight() {
+    if (sizedTabList?.isConnected) {
+      sizedTabList.removeAttribute("zenslop-tab-list-sized");
+      sizedTabList.style.removeProperty("--zenslop-tab-list-height");
     }
-    paddedTabList = null;
+    sizedTabList = null;
+    lastTabListHeight = -1;
   }
-  function setTabListPadding(px) {
-    const target = px > 0 ? getTabPaddingTarget() : null;
-    if (px === lastTabPad && target === paddedTabList) return;
-    lastTabPad = px;
+  function setTabListHeight(px) {
+    const target = px >= 0 ? getTabListTarget() : null;
+    if (px === lastTabListHeight && target === sizedTabList) return;
 
-    if (target !== paddedTabList) clearTabListPadding();
+    if (target !== sizedTabList) clearTabListHeight();
     if (target) {
-      // Zen's wrapper is the vertical scroll container. Padding this one
-      // element creates a reachable empty area below the final tab, while
-      // avoiding the compounded padding caused by changing nested containers.
-      target.setAttribute("zenslop-tab-padding", "true");
-      target.style.setProperty("--zenslop-tab-list-padding", px + "px");
-      paddedTabList = target;
+      target.setAttribute("zenslop-tab-list-sized", "true");
+      target.style.setProperty("--zenslop-tab-list-height", px + "px");
+      sizedTabList = target;
+      lastTabListHeight = px;
     }
   }
 
@@ -417,28 +420,21 @@
           lastWidth = width;
           activeUntil = now + CONFIG.ANIM_TAIL_MS;
         }
-        // Measure from the tab scroller's real lower edge. With stacked media
-        // cards that edge can sit below the toolbar's top, so using baseTop
-        // alone leaves the last tabs underneath the fixed PiP.
-        const tabListBottom =
-          getTabPaddingTarget()?.getBoundingClientRect().bottom ?? baseTop;
-        const captionReserve = captionHeight > 0
-          ? captionHeight + CONFIG.GAP
-          : 0;
-        const minimumContentReserve =
-          height +
-          captionReserve +
-          CONFIG.GAP * 2 +
-          CONFIG.TAB_LIST_CLEARANCE;
-        const reservedHeight = Math.max(
-          minimumContentReserve,
-          tabListBottom - top + CONFIG.GAP + CONFIG.TAB_LIST_CLEARANCE,
-        );
-        setTabListPadding(Math.ceil(reservedHeight));
+        const tabList = getTabListTarget();
+        if (tabList) {
+          const tabListTop = tabList.getBoundingClientRect().top;
+          // End the scrollable tab list above the fixed PiP. Its own scrollbar
+          // now exposes the final tab without adding an empty padded tail.
+          const availableTabListHeight = Math.max(
+            0,
+            Math.floor(top - CONFIG.GAP - CONFIG.TAB_LIST_CLEARANCE - tabListTop),
+          );
+          setTabListHeight(availableTabListHeight);
+        }
       }
     } else {
       captionContainer.style.display = "none";
-      setTabListPadding(0);
+      clearTabListHeight();
     }
 
     if (performance.now() < activeUntil) schedule();
@@ -547,7 +543,7 @@
     // restart instead of re-seeding mid-glitch. (pendingDownAt is reset — a
     // fresh timer per stream is fine and self-heals on the next up-frame.)
     pendingDownAt = 0;
-    setTabListPadding(0);
+    clearTabListHeight();
     sourceTabActive = false;
     _notifyTickState();
   }
@@ -591,7 +587,7 @@
     if (!browserWindowActive) {
       pipContainer.style.visibility = "hidden";
       captionContainer.style.visibility = "hidden";
-      setTabListPadding(0);
+      clearTabListHeight();
     }
     if (isStreaming) bump();
     _notifyTickState();
@@ -668,7 +664,7 @@
       e.stopPropagation();
       userHidden = !userHidden;
       syncToggleIcons();
-      if (userHidden) setTabListPadding(0);
+      if (userHidden) clearTabListHeight();
       bump();
       _notifyTickState();
     });
@@ -814,7 +810,7 @@
     setSourceTabActive(active) {
       if (sourceTabActive === active) return;
       sourceTabActive = active;
-      if (sourceTabActive) setTabListPadding(0);
+      if (sourceTabActive) clearTabListHeight();
       if (isStreaming) bump();
       _notifyTickState();
     },
