@@ -24,6 +24,7 @@
     GAP: 6,
     TAB_LIST_CLEARANCE: 32,
     ANIM_MS: 220,
+    LAYOUT_ANIM_MS: 180,
     ANIM_TAIL_MS: 350,
     ELEVATED_HOLD_MS: 180,
     // A downward move of the player's top edge larger than this (px) is only
@@ -38,7 +39,14 @@
     PIP_OPEN_DEBOUNCE_MS: 1500,
     PIP_OBSERVE_TIMEOUT_MS: 3000,
   });
-  const ANIM_TRANSITION = `opacity ${CONFIG.ANIM_MS}ms ease, transform ${CONFIG.ANIM_MS}ms ease`;
+  const LAYOUT_TRANSITION =
+    `top ${CONFIG.LAYOUT_ANIM_MS}ms ease-out, ` +
+    `left ${CONFIG.LAYOUT_ANIM_MS}ms ease-out, ` +
+    `width ${CONFIG.LAYOUT_ANIM_MS}ms ease-out, ` +
+    `height ${CONFIG.LAYOUT_ANIM_MS}ms ease-out`;
+  const ANIM_TRANSITION =
+    `opacity ${CONFIG.ANIM_MS}ms ease, ` +
+    `transform ${CONFIG.ANIM_MS}ms ease, ${LAYOUT_TRANSITION}`;
 
   const MUSIC_PLAYER_SELECTORS =
     "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
@@ -71,7 +79,8 @@
       z-index: 10;
       pointer-events: none;
       transform-origin: 50% 100%;
-      will-change: opacity, transform;
+      transition: ${LAYOUT_TRANSITION};
+      will-change: opacity, transform, top, left, width, height;
     }
     #zen-sidebar-pip-container > canvas {
       width: 100%;
@@ -101,7 +110,8 @@
       overflow: hidden;
       z-index: 11;
       pointer-events: none;
-      transition: opacity ${CONFIG.ANIM_MS}ms ease;
+      transition: opacity ${CONFIG.ANIM_MS}ms ease,
+                  top ${CONFIG.LAYOUT_ANIM_MS}ms ease-out;
     }
     [zenslop-tab-padding="true"] {
       box-sizing: border-box !important;
