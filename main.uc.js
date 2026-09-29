@@ -132,8 +132,9 @@
       transform-origin: 50% 100%;
       transition: opacity ${CONFIG.CAPTION_ANIM_MS}ms ease,
                   transform ${CONFIG.CAPTION_ANIM_MS}ms ease,
+                  height ${CONFIG.LAYOUT_ANIM_MS}ms ease-out,
                   top ${CONFIG.LAYOUT_ANIM_MS}ms ease-out;
-      will-change: opacity, transform, top;
+      will-change: opacity, transform, height, top;
     }
     #zen-sidebar-pip-caption[zenslop-caption-visible="true"] {
       opacity: var(--zenslop-caption-opacity, 1);
@@ -208,6 +209,8 @@
   let captionText = "";
   let captionHideTimer = null;
   let captionExitTimer = null;
+  let captionNeedsMeasure = false;
+  let captionResizeFromHeight = null;
   let browserWindowActive = true;
   let captureMaxDimension = -1;
   function getCaptionMode() {
@@ -420,10 +423,41 @@
         let captionTop = null;
         if (captionVisible && captionText) {
           const cs = captionContainer.style;
+          const wasDisplayed = cs.display !== "none";
+          const currentHeight = wasDisplayed
+            ? captionContainer.getBoundingClientRect().height
+            : 0;
+          const nextWidth = playerWidth + "px";
+          const widthChanged = cs.width !== nextWidth;
           cs.display = "block";
-          cs.width = playerWidth + "px";
+          cs.width = nextWidth;
           cs.left = left + "px";
-          captionHeight = Math.ceil(captionContainer.getBoundingClientRect().height);
+
+          if (captionNeedsMeasure || widthChanged) {
+            const fromHeight = captionResizeFromHeight ?? currentHeight;
+            cs.height = "auto";
+            const targetHeight = Math.ceil(
+              captionContainer.getBoundingClientRect().height,
+            );
+            if (fromHeight > 0 && Math.abs(targetHeight - fromHeight) > 0.5) {
+              cs.height = fromHeight + "px";
+              void captionContainer.getBoundingClientRect();
+              cs.height = targetHeight + "px";
+              activeUntil = Math.max(
+                activeUntil,
+                now + CONFIG.LAYOUT_ANIM_MS + CONFIG.ANIM_TAIL_MS,
+              );
+            } else {
+              cs.height = targetHeight + "px";
+            }
+            captionNeedsMeasure = false;
+            captionResizeFromHeight = null;
+          }
+
+          captionHeight = Math.ceil(
+            Number.parseFloat(cs.height) ||
+            captionContainer.getBoundingClientRect().height,
+          );
           captionTop = mediaTop - CONFIG.GAP - captionHeight;
           cs.top = captionTop + "px";
           if (pipVisible) videoBottom = captionTop - CONFIG.GAP;
@@ -522,13 +556,21 @@
     captionContainer.removeAttribute("zenslop-caption-visible");
     captionContainer.textContent = "";
     captionContainer.style.display = "none";
+    captionContainer.style.removeProperty("height");
     captionText = "";
+    captionNeedsMeasure = false;
+    captionResizeFromHeight = null;
     lastTop = lastLeft = lastWidth = -1;
   }
 
   function showCaption(next) {
     const wasEmpty = !captionText;
     clearCaptionTimers();
+    if (captionContainer.style.display !== "none") {
+      const currentHeight = captionContainer.getBoundingClientRect().height;
+      if (currentHeight > 0) captionResizeFromHeight = currentHeight;
+    }
+    captionNeedsMeasure = true;
     captionText = next;
     captionContainer.textContent = next;
     lastTop = lastLeft = lastWidth = -1;
@@ -559,6 +601,9 @@
       captionExitTimer = null;
       captionText = "";
       captionContainer.textContent = "";
+      captionContainer.style.removeProperty("height");
+      captionNeedsMeasure = false;
+      captionResizeFromHeight = null;
       lastTop = lastLeft = lastWidth = -1;
       if (isStreaming) bump();
     }, CONFIG.CAPTION_ANIM_MS);
@@ -573,6 +618,9 @@
         captionExitTimer = null;
         captionText = "";
         captionContainer.textContent = "";
+        captionContainer.style.removeProperty("height");
+        captionNeedsMeasure = false;
+        captionResizeFromHeight = null;
         lastTop = lastLeft = lastWidth = -1;
         if (isStreaming) bump();
       }, CONFIG.CAPTION_ANIM_MS);
