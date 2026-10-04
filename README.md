@@ -25,25 +25,11 @@ This mod hooks into the existing media playback controls and surfaces the video 
 > [!NOTE]
 > This mod is loaded through [Sine](https://github.com/CosmoCreeper/Sine), Zen's userscript loader. If you're loading user-chrome scripts via a different mechanism, just add this to your chrome folder like you would with other sine mods. 
 > 
-> Additionally, this mod requires installing Javascript to work, which is disabled by default for unofficial sources in Sine. If you would like to audit the project for malicious code, you can look at the source code in this repository.
+> Additionally, this mod requires installing Javascript to work. If you would like to audit the project for malicious code, you can look at the source code in this repository.
 
 1. Visit [about:settings](about:settings) and go to the "Sine Mods" section
-2. Click the Settings icon to the right of the Install button, and turn on "Enable installing JS from unofficial sources. (unsafe, use at your own risk)" (see note above if hesitant)
-3. Enter `Firebolt9907/Zenslop` into the text input box right under "or, add your own locally from a GitHub repo." and click Install
-4. Restart your browser (important!!)
-
----
-
-## Featured Forks
-
-### Kawaiislop
-**bboonstra/Kawaiislop/tree/bugfix**
-
-<p align="center">
-  <img src="docs/kawaiislop.png" alt="Picture of Zenslop" height="640">
-</p>
-
-### Contact me if you want to add your fork here
+2. Search for `Zenslop` in the search box in the Sine Mods Marketplace and click Install
+3. Restart your browser (important!!)
 
 ---
 
