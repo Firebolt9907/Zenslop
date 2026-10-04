@@ -1,7 +1,17 @@
 [
   {
+    "property": "mod.zenslop.renderer",
+    "label": "Video Renderer",
+    "type": "dropdown",
+    "defaultValue": "auto",
+    "options": [
+      { "label": "Native PiP (automatic fallback)", "value": "auto" },
+      { "label": "Canvas (low frame rate)", "value": "canvas" }
+    ]
+  },
+  {
     "property": "mod.zenslop.quality",
-    "label": "Video Quality",
+    "label": "Canvas Video Quality",
     "type": "dropdown",
     "defaultValue": "360",
     "options": [
@@ -25,7 +35,7 @@
   },
   {
     "property": "mod.zenslop.framerate",
-    "label": "Preview Frame Rate",
+    "label": "Canvas Frame Rate",
     "type": "dropdown",
     "defaultValue": "15",
     "options": [

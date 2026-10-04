@@ -154,9 +154,18 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
     this._video = video;
     this._startTime = win.performance.now();
+    let videoRef = null;
+    try {
+      const { ContentDOMReference } = ChromeUtils.importESModule(
+        "resource://gre/modules/ContentDOMReference.sys.mjs",
+      );
+      videoRef = ContentDOMReference.get(video);
+    } catch (_) { /* Older Gecko builds can still use canvas capture. */ }
     this.sendAsyncMessage("ZenPiP:MirrorStarted", {
       width: srcWidth,
       height: srcHeight,
+      videoRef,
+      documentId: win.windowGlobalChild?.innerWindowId,
     });
 
     const doc = this.contentWindow?.document;
