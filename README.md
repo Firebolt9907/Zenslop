@@ -49,24 +49,31 @@ This mod hooks into the existing media playback controls and surfaces the video 
 
 ## The Technical Stuff
 
-The mod runs in three pieces that bridge Firefox's e10s process boundary:
+The mod bridges Firefox's process boundary with source actors and a native receiver:
 
 | File | Process | Responsibility |
 | --- | --- | --- |
-| `main.uc.js` | chrome | Injects the floating video container into the sidebar, registers the `JSWindowActor`, and exposes `window.ZenPiPController`. |
-| `content-actor.sys.mjs` | content | Discovers playing videos, mirrors YouTube captions, and captures scaled frames. |
-| `parent-actor.sys.mjs` | chrome | Runs the adaptive frame clock and forwards frames and captions to the sidebar controller. |
+| `main.uc.js` | chrome | Positions the preview, creates a receiver in the source process, and manages native startup and canvas fallback. |
+| `content-actor.sys.mjs` | content | Discovers videos, supplies an exact video reference, mirrors captions, and captures fallback frames. |
+| `parent-actor.sys.mjs` | chrome | Forwards source state and captions and runs the adaptive fallback frame clock. |
+| `native-actor.sys.mjs` | content | Calls Firefox's privileged `cloneElementVisually()` API in the sidebar receiver. |
 
-### Why a window actor?
+The source video lives in a content process, while the sidebar UI lives in
+chrome. By default, the mod embeds a remote browser in the sidebar in the
+source's process and clones already-decoded video into its receiver. Actors
+carry setup, control, and caption messages; native playback does not send
+per-frame RGBA buffers to chrome or create a second video decoder.
 
-The source video lives in a sandboxed content process, while the sidebar lives
-in the chrome process. A `JSWindowActor` pair bridges that boundary: the parent
-requests a frame, the child scales and reads it, and the parent paints it into
-the sidebar canvas.
+Canvas remains available when native startup fails, the source already has a
+PiP clone, or an isolated iframe cannot share the receiver process. Canvas
+capture is self-clocking, resolution-adaptive, and capped to the rendered
+sidebar size. Its default is 15 fps. Native playback follows the source frame
+rate; canvas quality and frame-rate settings apply only to canvas.
 
-Capture is self-clocking, resolution-adaptive, and capped to the rendered
-sidebar size. The default 15 fps mode evenly samples common 30 and 60 fps video
-while substantially reducing cross-process pixel traffic.
+The receiver is released when the preview hides, the source returns to view,
+or the browser window becomes inactive. Source playback and audio remain under
+the page's control. Native cloning is a browser-internal API, so fallback is
+retained for compatibility. Battery savings have not been measured.
 
 
 ---
@@ -93,6 +100,10 @@ when the sidebar PiP eye toggle is off.
 ---
 
 ## Configuration
+
+Choose **Video Renderer** in the mod settings: **Native PiP (automatic fallback)**
+is the default; **Canvas (low frame rate)** forces the existing renderer.
+After updating, restart Zen so it loads the new receiver actor module.
 
 Tunables live at the top of `main.uc.js` in the `CONFIG` block:
 
@@ -126,6 +137,11 @@ const MAX_FRAME_DIMENSION = 480;
 - Uses `JSWindowActor`, `OffscreenCanvas`, and cross-process pixel buffers.
 - Tested with YT and YTM on MacOS, but there shouldn't be anything OS specific
 
+The sidebar layout supports Zen 1.23b's Library hover stack. Tab-space
+reservation targets the inner tab viewport rather than `#tabbrowser-tabs`,
+which would move the playback controls and create a shrinking feedback loop.
+While recent downloads are open, the preview anchors above that overlay.
+
 ---
 
 ## Troubleshooting
@@ -142,16 +158,28 @@ Open the Browser Toolbox (`Cmd+Opt+Shift+I` on macOS) and check the chrome-proce
 <details>
 <summary><strong>The mirror is offset / jumps when the controls expand.</strong></summary>
 
-`ELEVATED_HOLD_MS` controls how long the mod holds the elevated top through brief glitch frames where Zen's expanded popup hasn't laid out yet. Bump it up if you see flicker.
+Update the mod and restart Zen if showing the preview pulls the playback
+controls towards the address bar and hiding it restores them. Older versions
+selected the outer tab strip instead of the inner viewport when reserving
+space. `ELEVATED_HOLD_MS` handles brief hover-layout glitches; increasing it
+does not fix that selector bug.
 </details>
 
 <details>
 <summary><strong>The mirror appears but framerate is choppy for the first few seconds.</strong></summary>
 
-Confirm your Firefox build supports `RTCRtpReceiver.jitterBufferTarget` and `playoutDelayHint`. Without them the receiver's adaptive jitter buffer ramps up over the first ~3 seconds.
+Run `window.ZenPiPController.diagnostics()` in the chrome-process Browser Toolbox.
+It reports `renderer`, `nativeStarting`, and `fallbackReason`. Canvas stays
+visible during startup and is removed only after native presentation is
+confirmed. Completely black video may fail that check on builds without native
+presentation counters and stay on canvas. To retry a failed native source,
+toggle Video Renderer to Canvas and back to Native PiP.
 </details>
 
 ---
+
+Regression checks: `node --test tests/*.test.mjs`. These use mocked Gecko objects;
+real process placement, presentation, and power use must be checked in Zen.
 
 ## License
 

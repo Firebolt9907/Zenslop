@@ -51,7 +51,10 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
             },
             win,
           });
-          controller.offerVideo(msg.data.width, msg.data.height, this.browsingContext);
+          controller.offerVideo(msg.data.width, msg.data.height, this.browsingContext, {
+            videoRef: msg.data.videoRef,
+            documentId: msg.data.documentId,
+          });
         }
         break;
       }
@@ -105,14 +108,17 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
         console.log("[Zenslop/parent] VideoStopped reason:", reason);
         const controller = win.ZenPiPController;
         if (controller) {
-          if (reason.includes("pause")) {
-            controller.hideCaption?.();
-          } else {
-            controller.setCaption?.("");
+          if (controller.getActiveBC?.()?.id === this.browsingContext.id) {
+            if (reason.includes("pause")) {
+              controller.hideCaption?.();
+            } else {
+              controller.setCaption?.("");
+            }
           }
           controller.unregisterSource(this.browsingContext.id);
           controller.notifySourceStopped(this.browsingContext);
         }
+        this._setProcessingActive(false);
         this._stopTicking();
         try {
           this.sendAsyncMessage("ZenPiP:Stop", {});
@@ -124,6 +130,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
   }
 
   _startTicking(win) {
+    if (this._tickScheduled && this._timerWindow === win) return;
     this._stopTicking();
     this._timerWindow = win;
     this._tickScheduled = true;

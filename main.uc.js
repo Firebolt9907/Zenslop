@@ -10,6 +10,7 @@
 
   const LOG_PREFIX = "[Zenslop]";
   const CAPTIONS_PREF = "mod.zenslop.captions";
+  const RENDERER_PREF = "mod.zenslop.renderer";
   const CAPTIONS_WHEN_PIP_HIDDEN_PREF =
     "mod.zenslop.captionsWhenPipHidden";
   const CAPTION_MODES = new Set(["off", "on", "youtube"]);
@@ -54,10 +55,16 @@
     `opacity ${CONFIG.ANIM_MS}ms ease, ` +
     `transform ${CONFIG.ANIM_MS}ms ease, ${LAYOUT_TRANSITION}`;
 
-  const MUSIC_PLAYER_SELECTORS =
-    "#zen-media-controls-toolbar, .zen-sidebar-bottom-buttons";
-  const TAB_LIST_SELECTORS =
-    "#zen-tabs-wrapper, #tabbrowser-arrowscrollbox, #tabbrowser-tabs";
+  const MUSIC_PLAYER_SELECTORS = [
+    "#zen-media-controls-toolbar", ".zen-sidebar-bottom-buttons",
+  ];
+  // These are ordered fallbacks, not a comma-separated selector. querySelector
+  // returns document order: the outer #tabbrowser-tabs wins over its children
+  // and resizing it moves the controls that our next measurement depends on.
+  // Never resize that outer strip (or Library's copies of workspace tabs).
+  const TAB_LIST_SELECTORS = [
+    "#zen-tabs-wrapper", "#tabbrowser-arrowscrollbox",
+  ];
   const PIP_BUTTON_SELECTORS = [
     '[id*="pictureinpicture" i]',
     '[class*="pictureinpicture" i]',
@@ -67,7 +74,8 @@
     '[anonid*="pictureinpicture" i]',
   ].join(",");
 
-  const musicPlayerUI = document.querySelector(MUSIC_PLAYER_SELECTORS);
+  const musicPlayerUI = MUSIC_PLAYER_SELECTORS
+    .map(selector => document.querySelector(selector)).find(Boolean);
   if (!musicPlayerUI) {
     err("Could not find the music player UI.");
     return;
@@ -95,10 +103,12 @@
       box-sizing: border-box;
       border: 1px solid color-mix(in srgb, white 8%, transparent);
       border-radius: inherit;
-      z-index: 1;
+      z-index: 2;
       pointer-events: none;
     }
     #zen-sidebar-pip-container > canvas {
+      position: relative;
+      z-index: 1;
       width: 100%;
       height: 100%;
       max-width: 100%;
@@ -108,6 +118,15 @@
       border-radius: calc(var(--zen-border-radius) + 2px);
       object-fit: fill;
       display: block;
+    }
+    #zen-sidebar-pip-container > browser {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      border: 0;
     }
     #zen-sidebar-pip-caption {
       position: fixed;
@@ -253,7 +272,11 @@
   let sizedTabList = null;
   function getTabListTarget() {
     if (sizedTabList?.isConnected) return sizedTabList;
-    return document.querySelector(TAB_LIST_SELECTORS);
+    for (const selector of TAB_LIST_SELECTORS) {
+      const target = document.querySelector(selector);
+      if (target && !target.contains(musicPlayerUI)) return target;
+    }
+    return null;
   }
   function clearTabListHeight() {
     if (sizedTabList?.isConnected) {
@@ -299,6 +322,17 @@
           top = r.top;
         }
       }
+    }
+    // Zen 1.23's recent downloads are an absolute overlay, not a taller
+    // toolbar. Our fixed preview lives outside Zen's sidebar mask, so place
+    // it above that overlay while Library's stack is open.
+    const foot = document.getElementById("zen-sidebar-foot-buttons");
+    const downloads = document.getElementById("zen-library-download-list");
+    if (foot?.hasAttribute("zen-library-stack-open") && downloads) {
+      const style = window.getComputedStyle(downloads);
+      const rect = downloads.getBoundingClientRect();
+      if (style.display !== "none" && style.visibility !== "hidden" &&
+          rect.width > 0 && rect.height > 0) top = Math.min(top, rect.top);
     }
     return {
       top,
@@ -351,6 +385,7 @@
         ? "visible"
         : "hidden";
       lastVisible = visibilityState;
+      _notifyTickState();
     }
     if (!animating) {
       const op = userHidden ? 0 : opacity;
@@ -679,6 +714,27 @@
     attributes: true,
     attributeFilter: ["hidden", "style", "class", "open"],
   });
+  const sidebarLayout = musicPlayerUI.parentElement;
+  if (sidebarLayout) {
+    // Library changes sibling hover attributes/animations without resizing
+    // the media toolbar itself. Watch the shared layout, not just the player.
+    const libraryObserver = new MutationObserver(bump);
+    libraryObserver.observe(sidebarLayout, {
+      attributes: true,
+      subtree: true,
+      attributeFilter: ["zen-library-stack-open", "zen-library-stack-closing"],
+    });
+    for (const type of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
+      sidebarLayout.addEventListener(type, bump);
+    }
+    window.addEventListener("unload", () => {
+      libraryObserver.disconnect();
+      for (const type of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
+        sidebarLayout.removeEventListener(type, bump);
+      }
+      clearTabListHeight();
+    }, { once: true });
+  }
   window.addEventListener("resize", bump);
 
   function updateBrowserActivity() {
@@ -814,6 +870,207 @@
   let lastPipOpenAt = 0;
   const availableSources = new Map();
   const actorRegistry = new Map();
+  const nativeSources = new Map();
+  let nativeSession = null;
+  let nativeSerial = 0;
+  let nativeFailedSource = null;
+  let nativeFallbackReason = "";
+  let rendererDisposed = false;
+
+  function nativeQuery(session, name, data = {}) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${name} timed out`)), 2000);
+      try {
+        const actor = session.browser.browsingContext.currentWindowGlobal
+          .getActor("ZenSidebarNative");
+        Promise.resolve(actor.sendQuery(name, {
+          ...data, sessionId: session.id,
+        })).then(resolve, reject).finally(() => clearTimeout(timer));
+      } catch (error) {
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
+  }
+
+  function stopNativePreview() {
+    const session = nativeSession;
+    if (!session) return;
+    nativeSession = null;
+    clearTimeout(session.healthTimer);
+    safe(() => session.browser.browsingContext.currentWindowGlobal
+      .getActor("ZenSidebarNative").sendAsyncMessage("ZenPiP:NativeStop", {
+        sessionId: session.id,
+      }));
+    session.browser.remove();
+    // Retain the fallback object and restore it after native output ends.
+    if (!canvasEl.isConnected) pipContainer.appendChild(canvasEl);
+  }
+
+  function failNativePreview(session, error) {
+    if (nativeSession !== session) return;
+    nativeFailedSource = session.source;
+    nativeFallbackReason = String(error);
+    warn("Native preview unavailable; using canvas:", nativeFallbackReason);
+    stopNativePreview();
+    _notifyTickState();
+  }
+
+  async function nativePictureVisible(session, width, height) {
+    // Native clones sometimes leave all media-element counters at zero.
+    // A tiny receiver snapshot is an alternative first-frame proof, only
+    // during startup. All-black output is inconclusive and falls back safely.
+    const snapshot = await new Promise((resolve, reject) => {
+      let expired = false;
+      const timer = setTimeout(() => {
+        expired = true;
+        reject(new Error("Native presentation snapshot timed out"));
+      }, 1500);
+      Promise.resolve().then(() => session.browser.browsingContext.currentWindowGlobal
+        .drawSnapshot(new DOMRect(0, 0, width, height),
+          Math.min(1, 32 / Math.max(width, height)), "rgb(0, 0, 0)"))
+        .then(bitmap => {
+          if (expired) bitmap.close();
+          else resolve(bitmap);
+        }, reject).finally(() => clearTimeout(timer));
+    });
+    try {
+      const probe = document.createElement("canvas");
+      probe.width = probe.height = 16;
+      const ctx = probe.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(snapshot, 0, 0, 16, 16);
+      const pixels = ctx.getImageData(0, 0, 16, 16).data;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i] > 8 || pixels[i + 1] > 8 || pixels[i + 2] > 8) return true;
+      }
+      return false;
+    } finally {
+      snapshot.close();
+    }
+  }
+
+  async function startNativePreview(bc, source) {
+    const browser = document.createXULElement("browser");
+    const session = nativeSession = {
+      id: ++nativeSerial, browser, bc, source, ready: false,
+    };
+    const check = () => {
+      if (nativeSession !== session || rendererDisposed ||
+          sourceBC !== bc || nativeSources.get(bc.id) !== source ||
+          bc.currentWindowGlobal?.innerWindowId !== source.documentId) {
+        throw new Error("Native startup cancelled or source navigated");
+      }
+    };
+    try {
+      const global = bc.currentWindowGlobal;
+      const sourceBrowser = Array.from(gBrowser.tabs).find(tab =>
+        tab.linkedBrowser?.browsingContext?.id === bc.top.id)?.linkedBrowser;
+      const pid = global?.domProcess?.childID;
+      if (!sourceBrowser || pid == null || !source.videoRef || !source.documentId) {
+        throw new Error("Native source/process identity unavailable");
+      }
+      // A remote type alone does not prove process equality. For isolated
+      // subframes, use canvas until a reliable affinity mechanism is available.
+      if (sourceBrowser.browsingContext.currentWindowGlobal?.domProcess?.childID !== pid) {
+        throw new Error("Source iframe is in a separate content process");
+      }
+      browser.setAttribute("type", "content");
+      browser.setAttribute("remote", "true");
+      browser.setAttribute("nodefaultsrc", "true");
+      browser.sameProcessAsFrameLoader = sourceBrowser.frameLoader;
+      browser.setAttribute("remoteType", global.domProcess.remoteType);
+      browser.setAttribute("initialBrowsingContextGroupId", bc.group.id);
+      const attrs = global.documentPrincipal.originAttributes;
+      browser.setAttribute("usercontextid", attrs.userContextId || 0);
+      if (attrs.privateBrowsingId) browser.setAttribute("privatebrowsing", "true");
+      browser.setAttribute("tabindex", "-1");
+      browser.setAttribute("aria-label", "Sidebar video preview");
+      pipContainer.insertBefore(browser, pipContainer.firstChild);
+      browser.loadURI(Services.io.newURI("about:blank"), {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      const deadline = Date.now() + 6000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        check();
+        safe(() => { browser.docShellIsActive = true; });
+        if (browser.browsingContext?.currentWindowGlobal) {
+          try { ready = (await nativeQuery(session, "ZenPiP:NativeReady"))?.ready; }
+          catch (_) { /* Actor propagation or document load may still be pending. */ }
+          if (ready) break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      check();
+      if (!ready) throw new Error("Native receiver did not initialize");
+      const receiver = browser.browsingContext.currentWindowGlobal;
+      const receiverAttrs = receiver.documentPrincipal.originAttributes;
+      if (receiver.domProcess?.childID !== pid ||
+          (receiverAttrs.userContextId || 0) !== (attrs.userContextId || 0) ||
+          (receiverAttrs.privateBrowsingId || 0) !== (attrs.privateBrowsingId || 0)) {
+        throw new Error("Native receiver process/container/private context mismatch");
+      }
+      await nativeQuery(session, "ZenPiP:NativeStart", source);
+      const presentationDeadline = Date.now() + 3000;
+      let presented = false;
+      while (Date.now() < presentationDeadline) {
+        check();
+        const health = await nativeQuery(session, "ZenPiP:NativeHealth");
+        check();
+        if (!health?.ok) throw new Error(health?.error || "Native attachment failed");
+        if (health.width > 0 && health.height > 0 &&
+            (health.presented || await nativePictureVisible(session, health.width, health.height))) {
+          presented = true;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      check();
+      if (!presented) throw new Error("Native video presentation could not be confirmed");
+      // Detach rather than CSS-hide: user-origin !important styles can leave
+      // the fallback canvas covering an otherwise working native receiver.
+      canvasEl.remove();
+      session.ready = true;
+      nativeFallbackReason = "";
+      _notifyTickState();
+      log("Native video preview active");
+      const monitor = async () => {
+        if (nativeSession !== session) return;
+        try {
+          check();
+          const health = await nativeQuery(session, "ZenPiP:NativeHealth");
+          check();
+          if (!health?.ok) throw new Error(health?.error || "Native preview disconnected");
+          if (!health.paused && health.lastFrameAt && Date.now() - health.lastFrameAt > 15000) {
+            throw new Error("Native preview stopped presenting frames");
+          }
+          session.healthTimer = setTimeout(monitor, 5000);
+        } catch (error) { failNativePreview(session, error); }
+      };
+      session.healthTimer = setTimeout(monitor, 5000);
+    } catch (error) {
+      failNativePreview(session, error);
+    }
+  }
+
+  const rendererObserver = {
+    observe() {
+      nativeFailedSource = null;
+      nativeFallbackReason = "";
+      stopNativePreview();
+      _notifyTickState();
+    },
+  };
+  Services.prefs.addObserver(RENDERER_PREF, rendererObserver);
+  window.addEventListener("unload", () => {
+    rendererDisposed = true;
+    stopNativePreview();
+    for (const info of actorRegistry.values()) {
+      info.setProcessingActive?.(false, "off", false);
+      info.stopTick();
+    }
+    Services.prefs.removeObserver(RENDERER_PREF, rendererObserver);
+  }, { once: true });
 
   const captionsPrefObserver = {
     observe() {
@@ -864,8 +1121,19 @@
   }
 
   function _notifyTickState() {
+    if (rendererDisposed) return;
+    const { visible, opacity } = getMediaPlayerVisibility();
     const frameProcessingActive =
-      isStreaming && !userHidden && !sourceTabActive && browserWindowActive;
+      isStreaming && !userHidden && !sourceTabActive && browserWindowActive &&
+      visible && opacity > 0.01;
+    const source = sourceBC ? nativeSources.get(sourceBC.id) : null;
+    if (nativeSession && (!frameProcessingActive || nativeSession.bc !== sourceBC ||
+        nativeSession.source !== source)) stopNativePreview();
+    if (frameProcessingActive && source && !nativeSession &&
+        nativeFailedSource !== source &&
+        Services.prefs.getStringPref(RENDERER_PREF, "auto") !== "canvas") {
+      startNativePreview(sourceBC, source);
+    }
     const info = sourceBC ? actorRegistry.get(sourceBC.id) : null;
     if (!info) return;
 
@@ -874,13 +1142,15 @@
       captionMode !== "off" &&
       !sourceTabActive &&
       browserWindowActive &&
+      visible && opacity > 0.01 &&
       (!userHidden || captionsWhenPipHidden);
+    const canvasProcessingActive = frameProcessingActive && !nativeSession?.ready;
     info.setProcessingActive?.(
-      frameProcessingActive || captionProcessingActive,
+      canvasProcessingActive || captionProcessingActive,
       captionMode,
       captionProcessingActive,
     );
-    if (frameProcessingActive) {
+    if (canvasProcessingActive) {
       info.startTick(info.win || window);
     } else {
       info.stopTick();
@@ -920,10 +1190,18 @@
   });
 
   window.ZenPiPController = {
+    diagnostics() {
+      return {
+        renderer: nativeSession?.ready ? "native" : "canvas",
+        nativeStarting: !!nativeSession && !nativeSession.ready,
+        fallbackReason: nativeFallbackReason,
+      };
+    },
     getActiveBC() {
       return sourceBC;
     },
     drawFrame({ buf, width, height }) {
+      if (nativeSession?.ready) return;
       try {
         // Adaptive capture resolution is independent from layout. The source
         // aspect is established by MirrorStarted/offerVideo; using each
@@ -966,9 +1244,12 @@
     },
     unregisterSource(id) {
       actorRegistry.delete(id);
+      nativeSources.delete(id);
+      if (nativeSession?.bc.id === id) stopNativePreview();
     },
-    offerVideo(width, height, browsingContext) {
+    offerVideo(width, height, browsingContext, nativeSource = null) {
       const id = browsingContext.id;
+      if (nativeSource) nativeSources.set(id, nativeSource);
       if (availableSources.has(id)) return;
       availableSources.set(id, { bc: browsingContext, width, height });
 
@@ -1032,6 +1313,12 @@
       const nextSourceBC = browsingContext || null;
       const sourceChanged =
         previousSourceBC && nextSourceBC && previousSourceBC.id !== nextSourceBC.id;
+      if (sourceChanged) {
+        const previous = actorRegistry.get(previousSourceBC.id);
+        previous?.setProcessingActive?.(false, "off", false);
+        previous?.stopTick();
+        stopNativePreview();
+      }
       if (sourceChanged) clearCaptionImmediately();
       sourceBC = nextSourceBC;
 
@@ -1171,6 +1458,18 @@
     }
     log("resource mapped to:", modUri.spec, "exists:", modDir.exists());
 
+    // Keep the receiver actor separate: it must never discover its own clone
+    // as a new source video or run the source caption/capture machinery.
+    try {
+      ChromeUtils.registerWindowActor("ZenSidebarNative", {
+        child: { esModuleURI: "resource://zen-sidebar-pip/native-actor.sys.mjs" },
+        allFrames: true,
+        matches: ["about:blank"],
+        safeForUntrustedWebProcess: true,
+      });
+    } catch (error) {
+      if (error.name !== "NotSupportedError") warn("Native actor registration failed:", error);
+    }
     ChromeUtils.registerWindowActor("ZenSidebarPiP", {
       parent: {
         esModuleURI: "resource://zen-sidebar-pip/parent-actor.sys.mjs",
