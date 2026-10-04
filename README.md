@@ -141,6 +141,11 @@ The sidebar layout supports Zen 1.23b's Library hover stack. Tab-space
 reservation targets the inner tab viewport rather than `#tabbrowser-tabs`,
 which would move the playback controls and create a shrinking feedback loop.
 While recent downloads are open, the preview anchors above that overlay.
+Opening Library itself animates the preview and captions with the playback
+bar: fade/scale in normal mode, horizontal movement in compact mode. The native
+receiver is released when hidden and resumes as the bar returns. Closing the
+downloads hover stack resets the position holds so the preview starts moving
+back immediately, without an extra stabilization delay.
 Zen normally hides a playback card when its source enters PiP. Zenslop keeps
 that card visible for its own native sidebar clone, preventing a repeated
 hide/release/show/reclone cycle. Regular PiP and fullscreen retain Zen's normal

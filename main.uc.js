@@ -200,12 +200,18 @@
     desynchronized: true,
   });
   pipContainer.appendChild(canvasEl);
-  document.documentElement.appendChild(pipContainer);
+  // A viewport-sized layer lets the preview inherit the toolbox's Library
+  // transform without replacing its own entrance/layout animations.
+  const libraryMotionLayer = document.createElement("div");
+  libraryMotionLayer.id = "zenslop-library-motion";
+  libraryMotionLayer.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:10";
+  libraryMotionLayer.appendChild(pipContainer);
+  document.documentElement.appendChild(libraryMotionLayer);
 
   const captionContainer = document.createElement("div");
   captionContainer.id = "zen-sidebar-pip-caption";
   captionContainer.setAttribute("aria-live", "off");
-  document.documentElement.appendChild(captionContainer);
+  libraryMotionLayer.appendChild(captionContainer);
 
   let lastTop = -1,
     lastLeft = -1,
@@ -269,6 +275,7 @@
   }
 
   let lastTabListHeight = -1;
+  let lastDownloadsOpen = false;
   let sizedTabList = null;
   function getTabListTarget() {
     if (sizedTabList?.isConnected) return sizedTabList;
@@ -328,21 +335,66 @@
     // it above that overlay while Library's stack is open.
     const foot = document.getElementById("zen-sidebar-foot-buttons");
     const downloads = document.getElementById("zen-library-download-list");
+    let downloadsOpen = false;
     if (foot?.hasAttribute("zen-library-stack-open") && downloads) {
       const style = window.getComputedStyle(downloads);
       const rect = downloads.getBoundingClientRect();
       if (style.display !== "none" && style.visibility !== "hidden" &&
-          rect.width > 0 && rect.height > 0) top = Math.min(top, rect.top);
+          rect.width > 0 && rect.height > 0) {
+        downloadsOpen = true;
+        top = Math.min(top, rect.top);
+      }
     }
     return {
       top,
       baseTop: baseRect.top,
       left: baseRect.left,
       width: baseRect.width,
+      downloadsOpen,
     };
   }
 
+  function getLibraryPresentation() {
+    const library = document.querySelector("zen-library[open]");
+    const toolbox = document.getElementById("navigator-toolbox");
+    const progress = library ? Number(library.openProgress ?? 1) : 0;
+    return {
+      active: !!library,
+      hidden: !!library && progress >= 0.999,
+      toolbox,
+      opacity: library && toolbox
+        ? Number.parseFloat(window.getComputedStyle(toolbox).opacity) || 0
+        : 1,
+    };
+  }
+
+  function syncLibraryMotion(presentation) {
+    if (!presentation.active || !presentation.toolbox) {
+      libraryMotionLayer.style.removeProperty("transform");
+      libraryMotionLayer.style.removeProperty("transform-origin");
+      libraryMotionLayer.style.removeProperty("opacity");
+      return;
+    }
+    const toolbox = presentation.toolbox;
+    const style = window.getComputedStyle(toolbox);
+    const matrix = new DOMMatrixReadOnly(style.transform === "none" ? undefined : style.transform);
+    const [originX, originY] = style.transformOrigin.split(" ").map(Number.parseFloat);
+    const rect = toolbox.getBoundingClientRect();
+    // Convert the toolbox's local pivot to viewport coordinates. Zen uses
+    // uniform scale in normal mode and horizontal translation in compact mode.
+    libraryMotionLayer.style.transformOrigin =
+      `${rect.left - matrix.e + matrix.a * originX}px ${rect.top - matrix.f + matrix.d * originY}px`;
+    libraryMotionLayer.style.transform = style.transform;
+    // Apply the toolbox fade outside local entrance/caption transitions so
+    // they cannot add another easing curve or delay to Zen's spring samples.
+    libraryMotionLayer.style.opacity = String(presentation.opacity);
+  }
+
   function getMediaPlayerVisibility() {
+    const library = getLibraryPresentation();
+    if (library.hidden) {
+      return { visible: false, opacity: 0 };
+    }
     if (musicPlayerUI.hidden || musicPlayerUI.hasAttribute("hidden")) {
       return { visible: false, opacity: 0 };
     }
@@ -357,13 +409,15 @@
     if (r.width === 0 || r.height === 0) {
       return { visible: false, opacity: 0 };
     }
-    return { visible: true, opacity: parseFloat(cs.opacity) };
+    return { visible: true, opacity: parseFloat(cs.opacity) * library.opacity };
   }
 
   function syncPosition() {
     scheduled = false;
     if (!isStreaming) return;
 
+    const library = getLibraryPresentation();
+    syncLibraryMotion(library);
     const { visible, opacity } = getMediaPlayerVisibility();
     const pipVisible =
       visible &&
@@ -388,12 +442,14 @@
       _notifyTickState();
     }
     if (!animating) {
-      const op = userHidden ? 0 : opacity;
+      const localOpacity = library.active && library.toolbox && library.opacity > 0
+        ? opacity / library.opacity : opacity;
+      const op = userHidden ? 0 : localOpacity;
       if (op !== lastOpacity) {
         pipContainer.style.opacity = String(op);
         lastOpacity = op;
       }
-      const captionOpacity = captionVisible ? opacity : 0;
+      const captionOpacity = captionVisible ? localOpacity : 0;
       if (captionOpacity !== lastCaptionOpacity) {
         captionContainer.style.setProperty(
           "--zenslop-caption-opacity",
@@ -403,15 +459,25 @@
       }
     }
 
-    if (pipVisible || captionVisible) {
+    // Keep untransformed geometry while Library moves the toolbox. Measuring
+    // its transformed controls and also transforming our layer would double
+    // the movement and feed animated coordinates back into tab sizing.
+    if ((pipVisible || captionVisible) && !library.active) {
       const {
         top: mediaTopRaw,
         baseTop,
         left,
         width: playerWidth,
+        downloadsOpen,
       } = getMediaTopEdge(true);
       if (playerWidth !== 0) {
         const now = performance.now();
+        if (downloadsOpen !== lastDownloadsOpen) {
+          lastElevatedTop = null;
+          lastCommittedMediaTop = null;
+          pendingDownAt = 0;
+          lastDownloadsOpen = downloadsOpen;
+        }
         let mediaTop = mediaTopRaw;
         if (mediaTopRaw < baseTop - 1) {
           lastElevatedTop = mediaTopRaw;
@@ -556,7 +622,7 @@
           clearTabListHeight();
         }
       }
-    } else {
+    } else if (!pipVisible && !captionVisible) {
       captionContainer.style.display = "none";
       clearTabListHeight();
     }
@@ -736,6 +802,19 @@
     }, { once: true });
   }
   window.addEventListener("resize", bump);
+
+  // Zen writes the toolbox transform/opacity on each spring update. Follow
+  // those exact samples, including swipe gestures and interrupted animations.
+  const libraryVisibilityObserver = new MutationObserver(records => {
+    if (!records.some(record => record.target.localName === "zen-library" ||
+        record.target.id === "navigator-toolbox")) return;
+    _notifyTickState();
+    bump();
+  });
+  libraryVisibilityObserver.observe(document.documentElement, {
+    attributes: true, subtree: true, attributeFilter: ["open", "style"],
+  });
+  window.addEventListener("unload", () => libraryVisibilityObserver.disconnect(), { once: true });
 
   function updateBrowserActivity() {
     const nextActive =
