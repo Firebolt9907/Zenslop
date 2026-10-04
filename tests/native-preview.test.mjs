@@ -143,6 +143,17 @@ function controller({ processMismatch = false, failure = false, mode = 'auto' } 
   bc.top = bc;
   const canvas = { isConnected: true, remove() { this.isConnected = false; } };
   const calls = [];
+  class ZenMediaCard {
+    constructor(browser) {
+      this.browser = browser;
+      this.controller = { isBeingUsedInPIPModeOrFullscreen: false };
+    }
+    get shouldBeVisible() {
+      return !this.controller.isBeingUsedInPIPModeOrFullscreen &&
+        this.browser.browserId !== context.gBrowser.selectedBrowser.browserId;
+    }
+  }
+  const card = new ZenMediaCard({ browsingContext: bc, browserId: 'source' });
   const browser = {
     setAttribute() {}, remove() { calls.push('receiver removed'); }, loadURI() {},
     browsingContext: { currentWindowGlobal: {
@@ -153,9 +164,13 @@ function controller({ processMismatch = false, failure = false, mode = 'auto' } 
           calls.push(name);
           if (name === 'ZenPiP:NativeReady') return Promise.resolve({ ready: true });
           if (name === 'ZenPiP:NativeStart' && failure) return Promise.reject(new Error('clone busy'));
+          if (name === 'ZenPiP:NativeStart') card.controller.isBeingUsedInPIPModeOrFullscreen = true;
           return Promise.resolve({ ok: true, presented: true, width: 320, height: 180 });
         },
-        sendAsyncMessage(name) { calls.push(name); },
+        sendAsyncMessage(name) {
+          calls.push(name);
+          if (name === 'ZenPiP:NativeStop') card.controller.isBeingUsedInPIPModeOrFullscreen = false;
+        },
       }),
     } },
   };
@@ -164,12 +179,14 @@ function controller({ processMismatch = false, failure = false, mode = 'auto' } 
     sourceBC: bc, isStreaming: true, userHidden: false, sourceTabActive: false,
     browserWindowActive: true, captionMode: 'youtube', captionsWhenPipHidden: false,
     safe: fn => { try { return fn(); } catch {} }, warn() {}, log() {},
-    getMediaPlayerVisibility: () => ({ visible: true, opacity: 1 }),
+    getMediaPlayerVisibility: () => ({ visible: card.shouldBeVisible, opacity: 1 }),
     canvasEl: canvas,
     pipContainer: { insertBefore() {}, appendChild(node) { node.isConnected = true; } },
-    document: { createXULElement: () => browser },
-    window: { addEventListener() {} },
-    gBrowser: { tabs: [{ linkedBrowser: { browsingContext: bc, frameLoader: {} } }] },
+    document: { createXULElement: () => browser,
+      documentElement: { hasAttribute: () => false } },
+    window: { addEventListener() {}, gZenMediaController: { frontCard: card } },
+    gBrowser: { selectedBrowser: { browserId: 'selected' },
+      tabs: [{ linkedBrowser: { browsingContext: bc, frameLoader: {} } }] },
     Services: {
       prefs: { addObserver() {}, removeObserver() {}, getStringPref: () => mode },
       io: { newURI: value => value },
@@ -191,13 +208,15 @@ function controller({ processMismatch = false, failure = false, mode = 'auto' } 
       const previous = sourceBC;
       sourceBC = { ...previous, id: 2 };
       sourceBC.top = sourceBC;
+      window.gZenMediaController.frontCard.browser.browsingContext = sourceBC;
       gBrowser.tabs = [{ linkedBrowser: { browsingContext: sourceBC, frameLoader: {} } }];
       nativeSources.set(2, { videoRef: { id: 2 }, documentId: 42 });
       actorRegistry.set(2, actorRegistry.get(previous.id));
       _notifyTickState();
     };
+    globalThis.restoreAdapters = restoreNativeMediaAdapters;
   `, context);
-  return { context, calls, canvas, async settle() {
+  return { context, calls, canvas, card, ZenMediaCard, async settle() {
     for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
   } };
 }
@@ -266,5 +285,58 @@ test('switching sources during startup cannot commit the old receiver', async ()
     assert.equal(c.calls.filter(name => name === 'ZenPiP:NativeStart').length, 1);
     assert.ok(c.calls.includes('ZenPiP:NativeStop'));
     assert.equal(c.canvas.isConnected, false);
+  } finally { c.context.hide(); }
+});
+
+test('Zen PiP-mode visibility does not repeatedly hide the owned sidebar clone', async () => {
+  const c = controller();
+  try {
+    c.context.begin();
+    await c.settle();
+    assert.equal(c.card.controller.isBeingUsedInPIPModeOrFullscreen, true);
+    assert.equal(c.card.shouldBeVisible, true);
+    const count = c.calls.length;
+    for (let i = 0; i < 20; i++) c.context.begin();
+    assert.equal(c.context.inspect().ready, true);
+    assert.equal(c.calls.length, count);
+
+    const other = new c.ZenMediaCard({ browsingContext: { id: 99 }, browserId: 'other' });
+    other.controller.isBeingUsedInPIPModeOrFullscreen = true;
+    assert.equal(other.shouldBeVisible, false, 'Regular PiP keeps Zen visibility semantics');
+    c.context.gBrowser.selectedBrowser.browserId = 'source';
+    assert.equal(c.card.shouldBeVisible, false, 'Selected source still hides its card');
+  } finally { c.context.hide(); c.context.restoreAdapters(); }
+});
+
+test('fullscreen and stopped clones retain Zen visibility semantics; adapter restores cleanly', async () => {
+  const c = controller();
+  const original = Object.getOwnPropertyDescriptor(c.ZenMediaCard.prototype, 'shouldBeVisible');
+  try {
+    c.context.begin();
+    await c.settle();
+    c.context.document.documentElement.hasAttribute = () => true;
+    assert.equal(c.card.shouldBeVisible, false);
+    c.context.document.documentElement.hasAttribute = () => false;
+    c.context.hide();
+    // A subsequently opened regular PiP on the same source must still hide it.
+    c.card.controller.isBeingUsedInPIPModeOrFullscreen = true;
+    assert.equal(c.card.shouldBeVisible, false);
+    c.context.restoreAdapters();
+    assert.equal(Object.getOwnPropertyDescriptor(c.ZenMediaCard.prototype, 'shouldBeVisible').get, original.get);
+  } finally { c.context.hide(); c.context.restoreAdapters(); }
+});
+
+test('unsupported Zen media-card implementations fall back once instead of flickering', async () => {
+  const c = controller();
+  Object.defineProperty(c.ZenMediaCard.prototype, 'shouldBeVisible', { configurable: false });
+  try {
+    c.context.begin();
+    await c.settle();
+    assert.equal(c.context.inspect().ready, false);
+    assert.equal(c.context.inspect().ticking, true);
+    assert.match(c.context.inspect().fallback, /adapter unavailable/);
+    const count = c.calls.length;
+    for (let i = 0; i < 20; i++) c.context.begin();
+    assert.equal(c.calls.length, count);
   } finally { c.context.hide(); }
 });

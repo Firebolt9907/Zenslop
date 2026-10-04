@@ -876,6 +876,40 @@
   let nativeFailedSource = null;
   let nativeFallbackReason = "";
   let rendererDisposed = false;
+  const nativeMediaAdapters = new Map();
+
+  function installNativeMediaAdapter() {
+    // Zen 1.23 hides cards whenever Gecko reports PiP mode. Visual cloning
+    // sets that flag too, causing hide -> stop clone -> show -> clone loops.
+    // Override only the visibility decision for OUR source while OUR receiver
+    // is attaching/presenting; regular PiP/fullscreen keeps Zen's behavior.
+    const card = window.gZenMediaController?.frontCard;
+    const prototype = card && Object.getPrototypeOf(card);
+    if (nativeMediaAdapters.has(prototype)) return;
+    const descriptor = prototype && Object.getOwnPropertyDescriptor(prototype, "shouldBeVisible");
+    if (!descriptor?.get || !descriptor.configurable) {
+      throw new Error("Zen media visibility adapter unavailable; using canvas");
+    }
+    const getter = function () {
+      if (nativeSession?.cloning && this.controller &&
+          this.browser?.browsingContext?.id === nativeSession.bc.top.id &&
+          !document.documentElement.hasAttribute("inDOMFullscreen")) {
+        return gBrowser.selectedBrowser.browserId !== this.browser.browserId;
+      }
+      return descriptor.get.call(this);
+    };
+    Object.defineProperty(prototype, "shouldBeVisible", { ...descriptor, get: getter });
+    nativeMediaAdapters.set(prototype, { descriptor, getter });
+  }
+
+  function restoreNativeMediaAdapters() {
+    for (const [prototype, { descriptor, getter }] of nativeMediaAdapters) {
+      if (Object.getOwnPropertyDescriptor(prototype, "shouldBeVisible")?.get === getter) {
+        Object.defineProperty(prototype, "shouldBeVisible", descriptor);
+      }
+    }
+    nativeMediaAdapters.clear();
+  }
 
   function nativeQuery(session, name, data = {}) {
     return new Promise((resolve, reject) => {
@@ -1010,6 +1044,8 @@
           (receiverAttrs.privateBrowsingId || 0) !== (attrs.privateBrowsingId || 0)) {
         throw new Error("Native receiver process/container/private context mismatch");
       }
+      installNativeMediaAdapter();
+      session.cloning = true;
       await nativeQuery(session, "ZenPiP:NativeStart", source);
       const presentationDeadline = Date.now() + 3000;
       let presented = false;
@@ -1065,6 +1101,7 @@
   window.addEventListener("unload", () => {
     rendererDisposed = true;
     stopNativePreview();
+    restoreNativeMediaAdapters();
     for (const info of actorRegistry.values()) {
       info.setProcessingActive?.(false, "off", false);
       info.stopTick();
