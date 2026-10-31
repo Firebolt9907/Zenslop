@@ -53,6 +53,7 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
           });
           controller.offerVideo(msg.data.width, msg.data.height, this.browsingContext, {
             videoRef: msg.data.videoRef,
+            canScrollReels: msg.data.canScrollReels === true,
             documentId: msg.data.documentId,
           });
         }

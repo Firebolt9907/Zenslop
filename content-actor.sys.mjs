@@ -90,6 +90,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
 
     if (event.type === "pause" || event.type === "ended" || event.type === "emptied") {
       if (target !== this._video) return;
+      if (event.type === "pause" && this._recoverReelBackgroundPause(target)) return;
       this._stopAndNotify("event:" + event.type);
     }
   }
@@ -153,6 +154,9 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     const srcHeight = video.videoHeight;
 
     this._video = video;
+    this._reelResumeAttempt = null;
+    this._reelBackgroundResumeUntil = win.document.hidden
+      ? win.performance.now() + 1500 : 0;
     this._startTime = win.performance.now();
     let videoRef = null;
     try {
@@ -165,6 +169,7 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
       width: srcWidth,
       height: srcHeight,
       videoRef,
+      canScrollReels: this._isInstagramReels(),
       documentId: win.windowGlobalChild?.innerWindowId,
     });
 
@@ -172,7 +177,11 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     if (doc && !this._visBound) {
       this._visBound = () => {
         const d = this.contentWindow?.document;
-        if (d) this.sendAsyncMessage("ZenPiP:SourceVisibility", { hidden: d.hidden });
+        if (d) {
+          this._reelBackgroundResumeUntil = d.hidden
+            ? this.contentWindow.performance.now() + 1500 : 0;
+          this.sendAsyncMessage("ZenPiP:SourceVisibility", { hidden: d.hidden });
+        }
       };
       doc.addEventListener("visibilitychange", this._visBound);
     }
@@ -181,6 +190,55 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
     }
 
     if (this._captionsActive) this._startCaptionTracking();
+  }
+
+  _recoverReelBackgroundPause(video) {
+    const win = this.contentWindow;
+    // Only recover the first pause immediately after backgrounding a Reel.
+    // Continuous auto-play retries would also fight media-key/user pauses.
+    if (!this._isInstagramReels() || !win.document.hidden ||
+        !video.isConnected || video.ended || !this._isAudible(video) ||
+        !this._reelBackgroundResumeUntil ||
+        win.performance.now() > this._reelBackgroundResumeUntil) return false;
+    this._reelBackgroundResumeUntil = 0;
+    const attempt = {};
+    this._reelResumeAttempt = attempt;
+    Promise.resolve().then(() => {
+      if (this._reelResumeAttempt !== attempt || this._video !== video ||
+          !win.document.hidden || !video.isConnected || video.ended ||
+          !this._isAudible(video)) return;
+      return video.play();
+    }).catch(() => {
+      if (this._reelResumeAttempt === attempt && this._video === video && video.paused) {
+        this._stopAndNotify("reels:background-resume-rejected");
+      }
+    }).finally(() => {
+      if (this._reelResumeAttempt === attempt) this._reelResumeAttempt = null;
+    });
+    return true;
+  }
+
+  _isInstagramReels() {
+    const location = this.contentWindow?.location;
+    return /(^|\.)instagram\.com$/.test(location?.hostname || "") &&
+      /^\/reels?\//.test(location?.pathname || "");
+  }
+
+  _scrollNextReel() {
+    if (!this._isInstagramReels() || !this._video?.isConnected) return;
+    const win = this.contentWindow;
+    const doc = win.document;
+    // Reels uses an inner snap-scrolling feed; scrolling the window alone
+    // does nothing when that feed owns the viewport.
+    for (let node = this._video.parentElement; node; node = node.parentElement) {
+      const overflow = win.getComputedStyle(node).overflowY;
+      if (/^(auto|scroll)$/.test(overflow) &&
+          node.scrollHeight > node.clientHeight + 1 && node.clientHeight > 0) {
+        node.scrollBy({ top: node.clientHeight, behavior: "smooth" });
+        return;
+      }
+    }
+    doc.scrollingElement?.scrollBy({ top: win.innerHeight, behavior: "smooth" });
   }
 
   _isYouTubeDocument() {
@@ -904,6 +962,8 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   _teardown() {
+    this._reelResumeAttempt = null;
+    this._reelBackgroundResumeUntil = 0;
     this._stopCaptionTracking(true);
     if (this._video && this._videoListeners) {
       try {
@@ -930,6 +990,10 @@ export class ZenSidebarPiPChild extends JSWindowActorChild {
   }
 
   async receiveMessage(msg) {
+    if (msg.name === "ZenPiP:NextReel") {
+      this._scrollNextReel();
+      return;
+    }
     if (msg.name === "ZenPiP:Tick") {
       // No doc.hidden gate here: the mirror is shown precisely when the
       // source tab is backgrounded, so hidden is the state we capture in.

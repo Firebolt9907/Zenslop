@@ -83,9 +83,17 @@ retained for compatibility. Battery savings have not been measured.
 | Action | Result |
 | --- | --- |
 | Play a video in any tab | Mirror appears above the sidebar media controls. |
+| Click **Next reel ↓** on an Instagram Reels preview | Scroll the source feed to the next reel without switching tabs. |
 | Click the eye icon next to the PiP button | Toggle the mirror visibility without stopping playback. |
 | Mute the source video | Mirror hides (mute is treated as the "this is an ad" signal). |
 | Pause / close the source tab | Mirror animates out and the stream is released. |
+
+Instagram Reels gets a one-time playback recovery if it pauses within 1.5 seconds
+of the source tab becoming hidden. This keeps the sidebar preview attached while
+requesting playback again. Later pauses behave normally, and a rejected playback
+request releases the preview. A manual pause during that short window can also be
+resumed because media pause events do not identify their cause. This workaround
+still needs verification against Instagram in Zen.
 
 The **Captions** mod setting follows the caption state in the YouTube player by
 default. It can also keep captions always on or turn them off entirely.

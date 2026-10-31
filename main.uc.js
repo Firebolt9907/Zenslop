@@ -200,6 +200,20 @@
     desynchronized: true,
   });
   pipContainer.appendChild(canvasEl);
+  const nextReelButton = document.createElement("button");
+  nextReelButton.textContent = "Next reel ↓";
+  nextReelButton.setAttribute("aria-label", "Scroll to next Instagram reel");
+  nextReelButton.title = "Scroll to next Instagram reel";
+  nextReelButton.hidden = true;
+  nextReelButton.style.cssText = "position:absolute;right:8px;bottom:8px;z-index:3;pointer-events:auto;padding:6px 10px;border:1px solid #ffffff55;border-radius:8px;background:#000b;color:white;cursor:pointer;";
+  nextReelButton.addEventListener("click", event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (nativeSources.get(sourceBC?.id)?.canScrollReels) {
+      safe(() => getActiveActor()?.sendAsyncMessage("ZenPiP:NextReel", {}));
+    }
+  });
+  pipContainer.appendChild(nextReelButton);
   // A viewport-sized layer lets the preview inherit the toolbox's Library
   // transform without replacing its own entrance/layout animations.
   const libraryMotionLayer = document.createElement("div");
@@ -1437,6 +1451,7 @@
       }
       if (sourceChanged) clearCaptionImmediately();
       sourceBC = nextSourceBC;
+      nextReelButton.hidden = !nativeSources.get(sourceBC?.id)?.canScrollReels;
 
       if (sourceBC) {
         try {
