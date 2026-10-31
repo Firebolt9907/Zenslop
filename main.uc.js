@@ -10,6 +10,7 @@
 
   const LOG_PREFIX = "[Zenslop]";
   const CAPTIONS_PREF = "mod.zenslop.captions";
+  const SHORT_VIDEO_MAX_HEIGHT_PREF = "mod.zenslop.shortVideoMaxHeight";
   const RENDERER_PREF = "mod.zenslop.renderer";
   const CAPTIONS_WHEN_PIP_HIDDEN_PREF =
     "mod.zenslop.captionsWhenPipHidden";
@@ -200,20 +201,21 @@
     desynchronized: true,
   });
   pipContainer.appendChild(canvasEl);
-  const nextReelButton = document.createElement("button");
-  nextReelButton.textContent = "Next reel ↓";
-  nextReelButton.setAttribute("aria-label", "Scroll to next Instagram reel");
-  nextReelButton.title = "Scroll to next Instagram reel";
-  nextReelButton.hidden = true;
-  nextReelButton.style.cssText = "position:absolute;right:8px;bottom:8px;z-index:3;pointer-events:auto;padding:6px 10px;border:1px solid #ffffff55;border-radius:8px;background:#000b;color:white;cursor:pointer;";
-  nextReelButton.addEventListener("click", event => {
+  const nextShortVideoButton = document.createElement("button");
+  nextShortVideoButton.textContent = "Next reel ↓";
+  nextShortVideoButton.setAttribute("aria-label", "Scroll to next Instagram reel");
+  nextShortVideoButton.title = "Scroll to next Instagram reel";
+  nextShortVideoButton.hidden = true;
+  nextShortVideoButton.style.cssText = "position:absolute;right:8px;bottom:8px;z-index:3;pointer-events:auto;padding:6px 10px;border:1px solid #ffffff55;border-radius:8px;background:#000b;color:white;cursor:pointer;";
+  nextShortVideoButton.addEventListener("click", event => {
     event.preventDefault();
     event.stopPropagation();
-    if (nativeSources.get(sourceBC?.id)?.canScrollReels) {
-      safe(() => getActiveActor()?.sendAsyncMessage("ZenPiP:NextReel", {}));
+    if (nativeSources.get(sourceBC?.id)?.shortVideoKind) {
+      beginShortVideoNavigation(1);
+      safe(() => getActiveActor()?.sendAsyncMessage("ZenPiP:NextShortVideo", {}));
     }
   });
-  pipContainer.appendChild(nextReelButton);
+  pipContainer.appendChild(nextShortVideoButton);
   // A viewport-sized layer lets the preview inherit the toolbox's Library
   // transform without replacing its own entrance/layout animations.
   const libraryMotionLayer = document.createElement("div");
@@ -286,6 +288,16 @@
       lastTop = lastLeft = lastWidth = -1;
       bump();
     }
+  }
+
+  function getVideoMaxHeight(playerWidth) {
+    if (!nativeSources.get(sourceBC?.id)?.shortVideoKind) return playerWidth;
+    const value = safe(() => Services.prefs.getStringPref(
+      SHORT_VIDEO_MAX_HEIGHT_PREF, "auto",
+    ));
+    const height = Number(value);
+    return Number.isFinite(height) && height >= 100 && height <= 2000
+      ? height : playerWidth;
   }
 
   let lastTabListHeight = -1;
@@ -587,7 +599,7 @@
           let height = width / videoAspect;
           const effectiveMaxHeight = Math.max(
             2,
-            Math.min(playerWidth, availableHeight),
+            Math.min(getVideoMaxHeight(playerWidth), availableHeight),
           );
           if (height > effectiveMaxHeight) {
             height = effectiveMaxHeight;
@@ -964,6 +976,7 @@
   const availableSources = new Map();
   const actorRegistry = new Map();
   const nativeSources = new Map();
+  const feedLoadingSources = new Set();
   let nativeSession = null;
   let nativeSerial = 0;
   let nativeFailedSource = null;
@@ -1139,20 +1152,32 @@
       }
       installNativeMediaAdapter();
       session.cloning = true;
-      await nativeQuery(session, "ZenPiP:NativeStart", source);
+      await nativeQuery(session, "ZenPiP:NativeStart", { ...source,
+        allowSourceVisible: feedLoadingSources.has(bc.id) && !sourceTabActive });
       const presentationDeadline = Date.now() + 3000;
       let presented = false;
+      let snapshotVisible = false;
+      let snapshotPending = false;
       while (Date.now() < presentationDeadline) {
         check();
         const health = await nativeQuery(session, "ZenPiP:NativeHealth");
         check();
         if (!health?.ok) throw new Error(health?.error || "Native attachment failed");
         if (health.width > 0 && health.height > 0 &&
-            (health.presented || await nativePictureVisible(session, health.width, health.height))) {
+            (health.presented || snapshotVisible)) {
           presented = true;
           break;
         }
-        await new Promise(resolve => setTimeout(resolve, 150));
+        // A compositor snapshot can stall for 1.5s. Do not block frame
+        // notifications behind it: either proof may complete presentation.
+        if (health.width > 0 && health.height > 0 && !snapshotPending) {
+          snapshotPending = true;
+          nativePictureVisible(session, health.width, health.height)
+            .then(visible => { snapshotVisible ||= visible; })
+            .catch(() => {})
+            .finally(() => { snapshotPending = false; });
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
       check();
       if (!presented) throw new Error("Native video presentation could not be confirmed");
@@ -1160,6 +1185,7 @@
       // the fallback canvas covering an otherwise working native receiver.
       canvasEl.remove();
       session.ready = true;
+      finishShortVideoNavigation(browser);
       nativeFallbackReason = "";
       _notifyTickState();
       log("Native video preview active");
@@ -1202,6 +1228,12 @@
     Services.prefs.removeObserver(RENDERER_PREF, rendererObserver);
   }, { once: true });
 
+  const shortVideoHeightObserver = { observe() { if (isStreaming) bump(); } };
+  safe(() => Services.prefs.addObserver(SHORT_VIDEO_MAX_HEIGHT_PREF, shortVideoHeightObserver));
+  window.addEventListener("unload", () => {
+    safe(() => Services.prefs.removeObserver(SHORT_VIDEO_MAX_HEIGHT_PREF, shortVideoHeightObserver));
+  }, { once: true });
+
   const captionsPrefObserver = {
     observe() {
       const nextMode = getCaptionMode();
@@ -1242,6 +1274,91 @@
     return false;
   }
 
+  let shortVideoNavigation = null;
+  function clearShortVideoNavigation() {
+    const navigation = shortVideoNavigation;
+    if (!navigation) return;
+    shortVideoNavigation = null;
+    clearTimeout(navigation.timeout);
+    for (const animation of navigation.animations) safe(() => animation.cancel());
+    navigation.cover?.remove();
+    if (navigation.sourceStopped && !navigation.frameReady && sourceBC?.id === navigation.bcId) {
+      nativeSources.delete(navigation.bcId);
+      stopNativePreview();
+      window.ZenPiPController?.hideVideo();
+    }
+  }
+  function beginShortVideoNavigation(direction) {
+    // Repeated clicks share the current transition; do not keep replacing its
+    // snapshot or resetting the cleanup watchdog while the actor is busy.
+    if (shortVideoNavigation) return;
+    if (!sourceBC || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    // Keep an opaque copy of the old frame over the live renderer until a
+    // matching frame from the replacement source has actually been drawn.
+    const cover = document.createElement("canvas");
+    cover.width = canvasEl.width;
+    cover.height = canvasEl.height;
+    const ctx = cover.getContext("2d", { alpha: false });
+    if (!ctx || !cover.width || !cover.height) return;
+    try { ctx.drawImage(canvasEl, 0, 0); } catch (_) { return; }
+    cover.style.cssText = "position:absolute;inset:0;z-index:2;pointer-events:none;width:100%;height:100%";
+    const navigation = shortVideoNavigation = {
+      bcId: sourceBC.id, direction, sourceReady: false, frameReady: false, animations: [], timeout: null, cover,
+      coverReady: !nativeSession?.ready,
+    };
+    if (nativeSession?.ready) {
+      const browser = nativeSession.browser;
+      const rect = browser.getBoundingClientRect();
+      safe(() => Promise.resolve(browser.browsingContext.currentWindowGlobal.drawSnapshot(
+        new DOMRect(0, 0, rect.width, rect.height),
+        Math.min(1, 480 / Math.max(rect.width, rect.height)), "rgb(0, 0, 0)",
+      )).then(bitmap => {
+        try {
+          if (shortVideoNavigation === navigation && !navigation.animating) {
+            ctx.drawImage(bitmap, 0, 0, cover.width, cover.height);
+            navigation.coverReady = true;
+            if ((navigation.sourceReady || navigation.sourceStopped) && !cover.isConnected) pipContainer.appendChild(cover);
+            if (navigation.pendingTarget) finishShortVideoNavigation(navigation.pendingTarget);
+          }
+        } finally { bitmap.close(); }
+      }).catch(() => {
+        // Snapshot failure must not leave a pending overlay or hold playback.
+        if (shortVideoNavigation === navigation) clearShortVideoNavigation();
+      }));
+    }
+    navigation.timeout = setTimeout(() => {
+      if (shortVideoNavigation === navigation) clearShortVideoNavigation();
+    }, 10000);
+  }
+  function finishShortVideoNavigation(target) {
+    const navigation = shortVideoNavigation;
+    if (!navigation?.sourceReady || navigation.bcId !== sourceBC?.id || navigation.animating) return;
+    navigation.frameReady = true;
+    // A native receiver can present before the outgoing snapshot resolves.
+    // Keep the transition pending and finish when both images are available.
+    if (!navigation.coverReady) { navigation.pendingTarget = target; return; }
+    if (!navigation.cover.isConnected) pipContainer.appendChild(navigation.cover);
+    navigation.animating = true;
+    clearTimeout(navigation.timeout);
+    // WAAPI's finished promise can stay pending when a window stops rendering.
+    // Keep a chrome-clock watchdog so a still-image overlay cannot stick.
+    navigation.timeout = setTimeout(() => {
+      if (shortVideoNavigation === navigation) clearShortVideoNavigation();
+    }, 350);
+    // Only the old image moves. The ready new frame fills the entire area
+    // underneath, so the transition can never reveal an empty container.
+    const animation = safe(() => navigation.cover.animate([
+      { transform: "translateY(0)", opacity: 1 },
+      { transform: `translateY(${-navigation.direction * 100}%)`, opacity: 1 },
+    ], { duration: 220, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }));
+    if (!animation) { clearShortVideoNavigation(); return; }
+    navigation.animations.push(animation);
+    Promise.resolve(animation.finished).catch(() => {}).then(() => {
+      if (shortVideoNavigation === navigation) clearShortVideoNavigation();
+    });
+  }
+  window.addEventListener("unload", clearShortVideoNavigation, { once: true });
+
   function getActiveActor() {
     if (!sourceBC) return null;
     return (
@@ -1249,6 +1366,95 @@
       null
     );
   }
+
+  // Send explicit Zen UI intent before Gecko dispatches any site media-session
+  // handler. Instagram's page-JS pause guard must not swallow the user's Pause.
+  let instagramMediaCommandPending = false;
+  async function handleInstagramMediaCommand(event) {
+    const button = event.target.closest?.(
+      ".zen-media-playpause-button, .zen-media-previoustrack-button, .zen-media-nexttrack-button",
+    );
+    if (!button) return;
+    const card = window.gZenMediaController?.frontCard;
+    if (!card?.controller || !card.element?.contains(event.target)) return;
+    const url = safe(() => new URL(card.browser.currentURI.spec));
+    const isReel = url && /(^|\.)instagram\.com$/.test(url.hostname) &&
+      /^\/reels?\//.test(url.pathname);
+    const isShort = url && /(^|\.)youtube\.com$/.test(url.hostname) &&
+      /^\/shorts\//.test(url.pathname);
+    if (!isReel && !isShort) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (instagramMediaCommandPending) return;
+    instagramMediaCommandPending = true;
+    try {
+      const actor = card.browser.browsingContext.currentWindowGlobal
+        .getActor("ZenSidebarPiP");
+      if (button.matches(".zen-media-previoustrack-button, .zen-media-nexttrack-button")) {
+        beginShortVideoNavigation(button.matches(".zen-media-previoustrack-button") ? -1 : 1);
+        actor.sendAsyncMessage(button.matches(".zen-media-previoustrack-button")
+          ? "ZenPiP:PreviousShortVideo" : "ZenPiP:NextShortVideo", {});
+        return;
+      }
+      await actor.sendQuery("ZenPiP:InstagramPlaybackIntent", {
+        paused: Boolean(card.controller.isPlaying),
+      });
+      if (card.element.isConnected) card.onToggle();
+    } catch (error) {
+      warn("Could not forward Instagram playback intent:", error);
+    } finally {
+      instagramMediaCommandPending = false;
+    }
+  }
+  musicPlayerUI.addEventListener("command", handleInstagramMediaCommand, true);
+  window.addEventListener("unload", () => {
+    musicPlayerUI.removeEventListener("command", handleInstagramMediaCommand, true);
+  }, { once: true });
+
+  const instagramTrackAdapters = new Map();
+  function isShortVideoCard(card) {
+    const url = safe(() => new URL(card?.browser?.currentURI?.spec));
+    return !!url && (
+      (/(^|\.)instagram\.com$/.test(url.hostname) && /^\/reels?\//.test(url.pathname)) ||
+      (/(^|\.)youtube\.com$/.test(url.hostname) && /^\/shorts\//.test(url.pathname))
+    );
+  }
+  function installInstagramTrackControls() {
+    const card = window.gZenMediaController?.frontCard;
+    if (!card?.controller) return;
+    const prototype = Object.getPrototypeOf(card);
+    if (!instagramTrackAdapters.has(prototype)) {
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "updateSupportedKeys");
+      if (!descriptor?.configurable || typeof descriptor.value !== "function") return;
+      const wrapper = function (...args) {
+        descriptor.value.apply(this, args);
+        if (!isShortVideoCard(this)) return;
+        for (const key of ["previoustrack", "nexttrack"]) {
+          const button = this.element.querySelector(`.zen-media-${key}-button`);
+          if (button) button.disabled = false;
+        }
+      };
+      Object.defineProperty(prototype, "updateSupportedKeys", { ...descriptor, value: wrapper });
+      instagramTrackAdapters.set(prototype, { descriptor, wrapper });
+    }
+    card.updateSupportedKeys();
+  }
+  const instagramTrackObserver = new MutationObserver(installInstagramTrackControls);
+  instagramTrackObserver.observe(musicPlayerUI, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"],
+  });
+  window.addEventListener("TabSelect", installInstagramTrackControls);
+  installInstagramTrackControls();
+  window.addEventListener("unload", () => {
+    instagramTrackObserver.disconnect();
+    window.removeEventListener("TabSelect", installInstagramTrackControls);
+    for (const [prototype, { descriptor, wrapper }] of instagramTrackAdapters) {
+      if (Object.getOwnPropertyDescriptor(prototype, "updateSupportedKeys")?.value === wrapper) {
+        Object.defineProperty(prototype, "updateSupportedKeys", descriptor);
+      }
+    }
+    instagramTrackAdapters.clear();
+  }, { once: true });
 
   function _notifyTickState() {
     if (rendererDisposed) return;
@@ -1325,13 +1531,27 @@
         renderer: nativeSession?.ready ? "native" : "canvas",
         nativeStarting: !!nativeSession && !nativeSession.ready,
         fallbackReason: nativeFallbackReason,
+        sourceSerial: nativeSources.get(sourceBC?.id)?.sourceSerial,
+        nativeSerial: nativeSession?.source?.sourceSerial,
+        transition: shortVideoNavigation ? {
+          sourceReady: shortVideoNavigation.sourceReady,
+          frameReady: shortVideoNavigation.frameReady,
+          coverReady: shortVideoNavigation.coverReady,
+          animating: !!shortVideoNavigation.animating,
+        } : null,
       };
+    },
+    async inspectSource() {
+      return { ...this.diagnostics(),
+        content: await getActiveActor()?.sendQuery("ZenPiP:InspectSource", {}) };
     },
     getActiveBC() {
       return sourceBC;
     },
-    drawFrame({ buf, width, height }) {
+    drawFrame({ buf, width, height, sourceSerial }) {
       if (nativeSession?.ready) return;
+      const expectedSerial = nativeSources.get(sourceBC?.id)?.sourceSerial;
+      if (expectedSerial != null && sourceSerial !== expectedSerial) return;
       try {
         // Adaptive capture resolution is independent from layout. The source
         // aspect is established by MirrorStarted/offerVideo; using each
@@ -1340,6 +1560,7 @@
         setCanvasDimensions(width, height);
         const img = new ImageData(new Uint8ClampedArray(buf), width, height);
         canvasCtx.putImageData(img, 0, 0);
+        finishShortVideoNavigation(canvasEl);
       } catch (e) {
         err("drawFrame error:", e?.name, e?.message);
       }
@@ -1360,6 +1581,18 @@
     hideCaption() {
       hideCaptionNow();
     },
+    // Feed loading may briefly render an unselected source tab. Keep its
+    // native clone attached instead of falling back to low-resolution canvas.
+    async setSourceFeedLoading(id, active) {
+      if (active) feedLoadingSources.add(id);
+      else feedLoadingSources.delete(id);
+      const session = nativeSession;
+      if (session?.bc.id === id && session.cloning) {
+        await nativeQuery(session, "ZenPiP:NativeSourceActivity", {
+          allowSourceVisible: active && !sourceTabActive,
+        });
+      }
+    },
     setSourceTabActive(active) {
       if (sourceTabActive === active) return;
       sourceTabActive = active;
@@ -1374,12 +1607,24 @@
     },
     unregisterSource(id) {
       actorRegistry.delete(id);
+      // Shorts pauses the outgoing video before its replacement is playable.
+      // Retain its receiver/frame during an explicit navigation handoff.
+      if (shortVideoNavigation?.bcId === id && !shortVideoNavigation.animating) {
+        shortVideoNavigation.sourceStopped = true;
+        return;
+      }
       nativeSources.delete(id);
       if (nativeSession?.bc.id === id) stopNativePreview();
     },
     offerVideo(width, height, browsingContext, nativeSource = null) {
       const id = browsingContext.id;
       if (nativeSource) nativeSources.set(id, nativeSource);
+      if (shortVideoNavigation?.bcId === id) {
+        shortVideoNavigation.sourceReady = true;
+        if (shortVideoNavigation.coverReady && !shortVideoNavigation.cover.isConnected) {
+          pipContainer.appendChild(shortVideoNavigation.cover);
+        }
+      }
       if (availableSources.has(id)) return;
       availableSources.set(id, { bc: browsingContext, width, height });
 
@@ -1396,6 +1641,13 @@
     },
     notifySourceStopped(bc) {
       availableSources.delete(bc.id);
+      if (shortVideoNavigation?.bcId === bc.id && !shortVideoNavigation.animating) {
+        shortVideoNavigation.sourceStopped = true;
+        if (shortVideoNavigation.coverReady && !shortVideoNavigation.cover.isConnected) {
+          pipContainer.appendChild(shortVideoNavigation.cover);
+        }
+        return;
+      }
 
       if (sourceBC && sourceBC.id === bc.id) {
         if (availableSources.size > 0) {
@@ -1451,7 +1703,20 @@
       }
       if (sourceChanged) clearCaptionImmediately();
       sourceBC = nextSourceBC;
-      nextReelButton.hidden = !nativeSources.get(sourceBC?.id)?.canScrollReels;
+      const shortVideoKind = nativeSources.get(sourceBC?.id)?.shortVideoKind;
+      if (shortVideoKind === "reel" &&
+          window.gZenMediaController?.frontCard?.browser?.browsingContext?.id !== sourceBC?.top?.id) {
+        // Instagram may have cleared its media session when auto-pausing.
+        // Re-register resumed audio even if soundplaying never toggled again.
+        const browser = sourceBC?.top?.embedderElement;
+        if (browser) safe(() => window.gZenMediaController?.onAudioPlaybackStarted(browser));
+      }
+      nextShortVideoButton.hidden = !shortVideoKind;
+      nextShortVideoButton.textContent = shortVideoKind === "short" ? "Next Short ↓" : "Next reel ↓";
+      const nextLabel = shortVideoKind === "short"
+        ? "Scroll to next YouTube Short" : "Scroll to next Instagram reel";
+      nextShortVideoButton.setAttribute("aria-label", nextLabel);
+      nextShortVideoButton.title = nextLabel;
 
       if (sourceBC) {
         try {
@@ -1614,6 +1879,9 @@
           playing: { capture: true, mozSystemGroup: true },
           loadedmetadata: { capture: true, mozSystemGroup: true },
           canplay: { capture: true, mozSystemGroup: true },
+          loadeddata: { capture: true, mozSystemGroup: true },
+          durationchange: { capture: true, mozSystemGroup: true },
+          timeupdate: { capture: true, mozSystemGroup: true },
           pause: { capture: true, mozSystemGroup: true },
           ended: { capture: true, mozSystemGroup: true },
           emptied: { capture: true, mozSystemGroup: true },

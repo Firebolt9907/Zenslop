@@ -36,7 +36,26 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
     }
 
     switch (msg.name) {
+      case "ZenPiP:ReelRescan": {
+        if (this._reelRescanTimeout != null) break;
+        this._reelTimerWindow = win;
+        this._reelRescanTimeout = win.setTimeout(() => {
+          this._reelRescanTimeout = null;
+          try { this.sendAsyncMessage("ZenPiP:ReelRescan", {}); } catch (_) {}
+        }, 16);
+        break;
+      }
+      case "ZenPiP:FeedBoundary": {
+        if (msg.data?.active) await this._wakeFeed(win);
+        else this._endFeedWake();
+        break;
+      }
+      case "ZenPiP:NavigationWatch": {
+        this._setNavigationWatch(msg.data?.active === true, win);
+        break;
+      }
       case "ZenPiP:MirrorStarted": {
+        this._sourceSerial = msg.data.sourceSerial;
         console.log("[Zenslop/parent] MirrorStarted from tab", this.browsingContext.id, msg.data.width, "x", msg.data.height);
         const controller = win.ZenPiPController;
         if (controller) {
@@ -53,9 +72,14 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
           });
           controller.offerVideo(msg.data.width, msg.data.height, this.browsingContext, {
             videoRef: msg.data.videoRef,
-            canScrollReels: msg.data.canScrollReels === true,
+            sourceSerial: msg.data.sourceSerial,
+            shortVideoKind: ["reel", "short"].includes(msg.data.shortVideoKind)
+              ? msg.data.shortVideoKind : null,
             documentId: msg.data.documentId,
           });
+          // A replacement video should not wait behind the prior frame timer
+          // or its background-tab safety timeout.
+          if (this._tickScheduled) this._sendTick();
         }
         break;
       }
@@ -89,7 +113,10 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
         if (!controller) break;
         const activeBC = typeof controller.getActiveBC === "function" ? controller.getActiveBC() : null;
         if (activeBC && activeBC.id === this.browsingContext.id) {
-          controller.setSourceTabActive(!msg.data.hidden);
+          const selected = win.gBrowser?.selectedBrowser;
+          controller.setSourceTabActive(selected
+            ? selected.browsingContext?.id === this.browsingContext.top.id
+            : !msg.data.hidden);
         }
         break;
       }
@@ -105,6 +132,8 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
       }
 
       case "ZenPiP:VideoStopped": {
+        if (msg.data?.sourceSerial != null && this._sourceSerial != null &&
+            msg.data.sourceSerial !== this._sourceSerial) break;
         const reason = msg.data?.reason || "";
         console.log("[Zenslop/parent] VideoStopped reason:", reason);
         const controller = win.ZenPiPController;
@@ -121,13 +150,71 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
         }
         this._setProcessingActive(false);
         this._stopTicking();
-        try {
-          this.sendAsyncMessage("ZenPiP:Stop", {});
-        } catch (_) {}
+        // The child has already torn down this video. Echoing Stop back can
+        // arrive after the next Reel starts and tear down that newer source.
         break;
       }
 
     }
+  }
+
+  async _wakeFeed(win) {
+    if (this._feedWake) return;
+    const browser = this.browsingContext.top.embedderElement;
+    if (!browser || browser === win.gBrowser?.selectedBrowser) return;
+    const lease = this._feedWake = { win, browser, active: browser.docShellIsActive, activated: false };
+    lease.onSelect = () => {
+      if (browser === win.gBrowser?.selectedBrowser) this._endFeedWake();
+    };
+    win.addEventListener("TabSelect", lease.onSelect);
+    lease.timer = win.setTimeout(() => this._endFeedWake(), 3000);
+    try {
+      // Install playback protection before visibilitychange can run page JS.
+      await this.sendQuery("ZenPiP:FeedWakeState", { active: true });
+      if (this._feedWake !== lease) return;
+      await win.ZenPiPController?.setSourceFeedLoading?.(this.browsingContext.id, true);
+      if (this._feedWake !== lease) return;
+      lease.activated = true;
+      browser.docShellIsActive = true;
+    } catch (_) { this._endFeedWake(); }
+  }
+
+  _endFeedWake() {
+    const lease = this._feedWake;
+    if (!lease) return;
+    this._feedWake = null;
+    lease.win.clearTimeout(lease.timer);
+    lease.win.removeEventListener("TabSelect", lease.onSelect);
+    if (lease.activated && lease.browser.isConnected !== false &&
+        lease.browser !== lease.win.gBrowser?.selectedBrowser) {
+      try { lease.browser.docShellIsActive = lease.active; } catch (_) {}
+    }
+    try { this.sendAsyncMessage("ZenPiP:FeedWakeState", { active: false }); } catch (_) {}
+    Promise.resolve(lease.win.ZenPiPController?.setSourceFeedLoading?.(this.browsingContext.id, false))
+      .catch(() => {});
+  }
+
+  _setNavigationWatch(active, win) {
+    if (this._navigationTimer != null) {
+      this._navigationWindow?.clearTimeout(this._navigationTimer);
+      this._navigationTimer = null;
+    }
+    this._navigationWindow = active ? win : null;
+    if (!active) return;
+    const deadline = Date.now() + 4000;
+    const poll = () => {
+      this._navigationTimer = null;
+      if (this._navigationWindow !== win) return;
+      if (Date.now() > deadline) {
+        this._navigationWindow = null;
+        try { this.sendAsyncMessage("ZenPiP:NavigationTimeout", {}); } catch (_) {}
+        return;
+      }
+      try { this.sendAsyncMessage("ZenPiP:NavigationCheck", {}); }
+      catch (_) { this._navigationWindow = null; return; }
+      this._navigationTimer = win.setTimeout(poll, 250);
+    };
+    this._navigationTimer = win.setTimeout(poll, 0);
   }
 
   _startTicking(win) {
@@ -324,6 +411,12 @@ export class ZenSidebarPiPParent extends JSWindowActorParent {
   }
 
   didDestroy() {
+    this._endFeedWake();
+    this._setNavigationWatch(false);
+    if (this._reelRescanTimeout != null) {
+      this._reelTimerWindow?.clearTimeout(this._reelRescanTimeout);
+      this._reelRescanTimeout = null;
+    }
     this._stopTicking();
     this._setProcessingActive(false);
     try {

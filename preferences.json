@@ -5,8 +5,54 @@
     "type": "dropdown",
     "defaultValue": "auto",
     "options": [
-      { "label": "Native PiP (automatic fallback)", "value": "auto" },
-      { "label": "Canvas (low frame rate)", "value": "canvas" }
+      {
+        "label": "Native PiP (automatic fallback)",
+        "value": "auto"
+      },
+      {
+        "label": "Canvas (low frame rate)",
+        "value": "canvas"
+      }
+    ]
+  },
+  {
+    "property": "mod.zenslop.shortVideoMaxHeight",
+    "label": "Reels / Shorts Maximum Height",
+    "type": "dropdown",
+    "defaultValue": "auto",
+    "options": [
+      {
+        "label": "Automatic (sidebar width)",
+        "value": "auto"
+      },
+      {
+        "label": "200 px",
+        "value": "200"
+      },
+      {
+        "label": "240 px",
+        "value": "240"
+      },
+      {
+        "label": "320 px",
+        "value": "320"
+      },
+      {
+        "label": "400 px",
+        "value": "400"
+      },
+      {
+        "label": "480 px",
+        "value": "480"
+      },
+      {
+        "label": "600 px",
+        "value": "600"
+      },
+      {
+        "label": "800 px",
+        "value": "800"
+      }
     ]
   },
   {

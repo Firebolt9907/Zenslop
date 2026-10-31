@@ -8,6 +8,13 @@ export class ZenSidebarNativeChild extends JSWindowActorChild {
           !!this.document.body };
       case "ZenPiP:NativeStart":
         return this._start(data);
+      // Only the chrome controller grants this during its bounded feed wake;
+      // selecting the real source tab still stops the preview in chrome.
+      case "ZenPiP:NativeSourceActivity":
+        if (this._session?.id === data.sessionId) {
+          this._session.allowSourceVisible = data.allowSourceVisible === true;
+        }
+        return true;
       case "ZenPiP:NativeHealth":
         return this._health(data.sessionId);
       case "ZenPiP:NativeStop":
@@ -17,7 +24,7 @@ export class ZenSidebarNativeChild extends JSWindowActorChild {
     return undefined;
   }
 
-  _start({ videoRef, documentId, sessionId }) {
+  _start({ videoRef, documentId, sessionId, allowSourceVisible = false }) {
     const doc = this.document;
     if (doc?.documentURI !== "about:blank" || !doc.body) {
       throw new Error("Native receiver must be an initialized about:blank document");
@@ -37,7 +44,7 @@ export class ZenSidebarNativeChild extends JSWindowActorChild {
         (sourceAttrs.privateBrowsingId || 0) !== (targetAttrs.privateBrowsingId || 0)) {
       throw new Error("Native receiver context differs from source");
     }
-    if (!source.ownerDocument.hidden) throw new Error("Source video is visible");
+    if (!source.ownerDocument.hidden && !allowSourceVisible) throw new Error("Source video is visible");
     if (source.isCloningElementVisually) throw new Error("Source already has a PiP clone");
     if (typeof source.cloneElementVisually !== "function") {
       throw new Error("Native cloning is unavailable");
@@ -49,7 +56,7 @@ export class ZenSidebarNativeChild extends JSWindowActorChild {
     target.style.cssText = "position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:black";
     doc.body.appendChild(target);
     const session = this._session = {
-      id: sessionId, source, target, src: source.currentSrc,
+      id: sessionId, source, target, allowSourceVisible, src: source.currentSrc,
       srcObject: source.srcObject, frames: 0, lastFrameAt: 0,
     };
     session.onHide = () => {
@@ -87,7 +94,7 @@ export class ZenSidebarNativeChild extends JSWindowActorChild {
     const s = this._session;
     if (!s || s.id !== sessionId) return { ok: false, error: "Native session stopped" };
     const ok = !s.error && s.source.isConnected && s.target.isConnected &&
-      s.source.ownerDocument.hidden && s.source.isCloningElementVisually &&
+      (s.source.ownerDocument.hidden || s.allowSourceVisible) && s.source.isCloningElementVisually &&
       s.source.currentSrc === s.src && s.source.srcObject === s.srcObject;
     const rect = s.target.getBoundingClientRect();
     return {
